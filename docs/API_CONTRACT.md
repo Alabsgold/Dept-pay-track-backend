@@ -208,6 +208,7 @@ Every error follows this shape, so the frontend only needs one error-handling pa
 | 403 | Logged in, but not allowed (e.g. a student trying to create a contribution) |
 | 404 | Resource doesn't exist (e.g. bad contribution ID) |
 | 409 | Conflict — e.g. duplicate payment attempt (see section 4) |
+| 429 | Rate limited — too many requests (login/register are throttled server-side) |
 | 500 | Unexpected server error |
 
 ---
@@ -221,3 +222,23 @@ Every error follows this shape, so the frontend only needs one error-handling pa
 - **Password reset** — no forgot-password flow exists yet. Worth deciding if this is in scope for the 16 days or explicitly cut for the demo.
 - **Token expiry** — tokens currently don't expire. Fine for a hackathon demo; flag if the team wants otherwise.
 - **Pagination** — list endpoints (`/contributions/`, `/payments/history/`, `/notifications/`) return everything with no paging. Fine at hackathon scale; would need revisiting for a real deployment.
+
+---
+
+## 8. Security & authorization rules — binding (added 2026-09-07, security audit)
+
+These apply to every endpoint above. Backend must enforce them; QA must test them.
+
+**Object-level authorization (no IDOR):**
+- `/payments/verify/{reference}/`, `/payments/{id}/receipt/`, `/payments/history/` — a student may only access **their own** payments. Class reps/admins may access payments within their own department.
+- `/notifications/{id}/read/` — only the notification's owner may mark it read; return `404` (not `403`) for other users' notifications so existence isn't leaked.
+- `/contributions/{id}/payments/` — class rep/admin only, scoped to their own department.
+
+**Payment webhook (`/payments/webhook/`) — in addition to signature verification:**
+- **Amount check:** the verified `data.amount` (kobo ÷ 100) must equal the matched `Payment`'s amount. On mismatch, do NOT mark success — mark the payment `failed` and log it.
+- **Idempotency:** duplicate deliveries of the same `charge.success` must be safe no-ops returning `200`. Never create a second `Payment`/`Transaction` for the same reference. Process webhooks inside a DB transaction.
+- Verify the HMAC against the **raw request body** (never re-serialized JSON).
+
+**Analytics (section 6) — permissions decided:** both `/analytics/` endpoints are **class rep/admin only** (`403` for students). The Data/AI teammate consumes them via a dedicated read-only service account with the class-rep role — never from the browser.
+
+**Registration hardening (section 1):** passwords are validated with Django's built-in validators (min 8 chars, common-password and all-numeric checks). Duplicate email/matric attempts return a **generic** error message (no account enumeration). Login and register are rate-limited server-side at 10/min per IP — clients must handle `429` using the standard error shape.
