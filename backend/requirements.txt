@@ -1,0 +1,5 @@
+# Pinned to the exact versions the project is developed and tested against.
+Django==5.2.17
+djangorestframework==3.18.1
+python-decouple==3.8
+requests==2.34.2
