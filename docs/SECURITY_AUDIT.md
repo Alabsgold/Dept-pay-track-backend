@@ -56,3 +56,21 @@ OK
 ```
 
 Everything is solid and locked down. Ready to move onto Contributions and Payments now.
+
+---
+
+### Audit v2 — security, structure & efficiency re-check (Sept 8, 2026)
+Re-ran the whole audit through a modern-Python (python-pro) lens, also covering structure and code efficiency. Verification: **12/12 tests passing**, `manage.py check` clean, and `check --deploy` shows only the 6 known deferred warnings documented above.
+
+What I found & fixed this pass:
+- **N-1 (minor):** dead `from django.contrib.auth import login` import in `views.py` — removed.
+- **N-2 (deploy blocker, logged in BOTTLENECKS):** DRF throttles by `REMOTE_ADDR`; behind Render's proxy every request shares the proxy IP, so the 10/min auth throttle would lock out all users at once in production. Fix at deploy: set `NUM_PROXIES = 1`.
+- **N-3 (structure):** the setup README was inside gitignored `directives/`, so anyone cloning the repo got no README. Added a tracked root `README.md`.
+- **N-4 (process):** nothing is committed yet — all Agent 1 work exists only locally. Owner action: make scoped `[users] ...` commits.
+- **N-5 (kept, not deleted):** `validate_level` looked like redundant dead code, but I verified empirically that the generated field is `ChoiceField(allow_blank=True)` — so it is the only thing rejecting `level: ""`. Kept it and added a comment.
+- **N-6 (minor):** added `test_register_duplicate_matric_number_case_insensitive` to lock the `__iexact` fix.
+- **N-7 (minor):** login now rotates the token (the old `get_or_create` let a leaked token survive re-login); locked by `test_login_rotates_token`.
+
+Deliberately NOT adopted (python-pro defaults that would violate `directives/skills.md`): repo-wide type hints, ruff/mypy/pytest, pyproject/uv — no new packages, no overengineering. Revisit targeted typing when the payments money-math lands.
+
+**Verdict: ready for Agent 2.** Structure is right-sized (one app per bounded concern), no security blockers remain in shipped code, and everything outstanding is the documented deploy checklist.

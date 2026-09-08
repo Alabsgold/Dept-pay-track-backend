@@ -118,6 +118,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         ]
 
     def validate_level(self, value):
+        # ChoiceField already rejects invalid choices; this also rejects blank
+        # strings (the generated field has allow_blank=True) so level can't be
+        # wiped to "".
         if value not in dict(User.LEVEL_CHOICES):
             raise serializers.ValidationError(f"Invalid level. Must be one of {[c[0] for c in User.LEVEL_CHOICES]}.")
         return value

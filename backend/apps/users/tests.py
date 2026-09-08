@@ -66,6 +66,19 @@ class UsersAuthTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data['error'], "bad_request")
 
+    def test_register_duplicate_matric_number_case_insensitive(self):
+        payload = {
+            "username": "lowercase",
+            "email": "lowercase@school.edu.ng",
+            "password": "S7rong!Passw0rd",
+            "matric_number": "csc/2021/001",  # lowercase duplicate of self.user
+            "department_id": self.department.id,
+            "level": "400"
+        }
+        response = self.client.post(reverse('auth-register'), payload)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['error'], "bad_request")
+
     def test_register_weak_password_rejected(self):
         payload = {
             "username": "weakpw",
@@ -90,6 +103,14 @@ class UsersAuthTests(APITestCase):
         self.assertEqual(response.data["user"]["username"], "testuser")
         self.assertEqual(response.data["user"]["role"], "student")
         self.assertEqual(response.data["user"]["id"], self.user.id)
+
+    def test_login_rotates_token(self):
+        payload = {"username": "testuser", "password": "securepassword123"}
+        first = self.client.post(reverse('auth-login'), payload).data["token"]
+        second_response = self.client.post(reverse('auth-login'), payload)
+        self.assertNotEqual(second_response.data["token"], first)
+        self.assertFalse(Token.objects.filter(key=first).exists())
+        self.assertTrue(Token.objects.filter(key=second_response.data["token"]).exists())
 
     def test_login_invalid_credentials(self):
         payload = {
