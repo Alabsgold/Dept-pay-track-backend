@@ -1,7 +1,9 @@
 from decimal import Decimal
 
+from django.utils.html import strip_tags
 from rest_framework import serializers
 
+from apps.users.models import Department
 from .models import Contribution
 
 
@@ -18,6 +20,12 @@ class ContributionSerializer(serializers.ModelSerializer):
         required=False,
     )
     has_paid = serializers.SerializerMethodField(read_only=True)
+    department_id = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(),
+        source='department',
+        write_only=True,
+        required=False,
+    )
 
     class Meta:
         model = Contribution
@@ -34,6 +42,7 @@ class ContributionSerializer(serializers.ModelSerializer):
             'is_mandatory',
             'target_level',
             'has_paid',
+            'department_id',
         ]
         read_only_fields = ['id', 'has_paid']
         extra_kwargs = {
@@ -45,6 +54,9 @@ class ContributionSerializer(serializers.ModelSerializer):
         if value <= 0:
             raise serializers.ValidationError('Amount must be greater than zero.')
         return value
+
+    def validate_description(self, value):
+        return strip_tags(value) if value else value
 
     def get_has_paid(self, obj):
         request = self.context.get('request')

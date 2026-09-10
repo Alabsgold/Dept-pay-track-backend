@@ -61,17 +61,26 @@ class ContributionListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         user = self.request.user
-        if not user.department_id:
-            raise serializers.ValidationError(
-                {
-                    'non_field_errors': (
-                        'You must belong to a department before you can create contributions.'
+        target_department = serializer.validated_data.get('department')
+
+        if user.role == User.ROLE_ADMIN or user.is_staff or user.is_superuser:
+            if not target_department:
+                if user.department_id:
+                    target_department = user.department
+                else:
+                    raise serializers.ValidationError(
+                        {'department_id': 'System admins must specify a department_id to create a contribution.'}
                     )
-                }
-            )
+        else:
+            if not user.department_id:
+                raise serializers.ValidationError(
+                    {'non_field_errors': 'You must belong to a department before you can create contributions.'}
+                )
+            target_department = user.department
+
         # Owner + department are ALWAYS set server-side. The client can never
-        # choose who created it or which department it belongs to.
-        serializer.save(department=user.department, created_by=user)
+        # spoof who created it or target another department without admin rights.
+        serializer.save(department=target_department, created_by=user)
 
 
 class ContributionDetailView(generics.RetrieveAPIView):
