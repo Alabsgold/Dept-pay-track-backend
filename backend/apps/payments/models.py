@@ -13,6 +13,16 @@ class Payment(models.Model):
         (PAYMENT_EXCURSION, 'Excursion'),
     ]
 
+    # Payment method: how the money was recorded (online via Paystack, or manual
+    # offline entry by a class rep/admin).
+    METHOD_ONLINE = 'online'
+    METHOD_MANUAL = 'manual'
+
+    METHOD_CHOICES = [
+        (METHOD_ONLINE, 'Online'),
+        (METHOD_MANUAL, 'Manual'),
+    ]
+
     STATUS_PENDING = 'pending'
     STATUS_SUCCESS = 'success'
     STATUS_FAILED = 'failed'
@@ -27,6 +37,31 @@ class Payment(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='payments'
+    )
+
+    # The fee this payment settles. NOT NULL is deliberately not enforced here:
+    # existing rows created online before this field may have null; new rows set
+    # it. The contributions bridge uses it to compute has_paid / totals.
+    contribution = models.ForeignKey(
+        'contributions.Contribution',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='payments',
+    )
+
+    method = models.CharField(
+        max_length=10,
+        choices=METHOD_CHOICES,
+        default=METHOD_ONLINE,
+    )
+
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='recorded_payments',
     )
 
     payment_type = models.CharField(

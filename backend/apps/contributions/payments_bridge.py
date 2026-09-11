@@ -1,31 +1,31 @@
 """
-Read-only bridge between the contributions app and the payments app.
+Read/write bridge between the contributions app and the payments app.
 
-The payments app is owned by a teammate and sits on an unmerged branch
-(``apps/payments``). Contributions needs a *read* of payment data for
-``has_paid``, collection totals, and per-student status, but must not:
+The payments app is owned by a teammate (``apps/payments``). Contributions
+needs to READ payment data for ``has_paid``, collection totals, and per-student
+status, and it needs ONE write: marking a student as paid offline.
 
-  * depend on the payments app being installed (it may not be yet), or
-  * modify anything in ``apps/payments`` (teammate's code), or
-  * trust that app's client-supplied amounts.
+To do that without breaking the teammate's branch:
 
-This module therefore introspects the Django app registry at call time:
-
-  * If ``apps.payments`` is installed AND its ``Payment`` model has a
-    ``contribution`` FK, we read from it.
-  * Otherwise we return safe defaults: nothing collected, nobody paid.
-
-The payments branch currently has a ``Payment`` model WITHOUT a
-``contribution`` field, so until that integration is done (planned ticket:
-"add contribution FK to Payment"), every student correctly reports unpaid.
+  * We only add fields to the ``Payment`` model via a NEW migration in the
+    payments app (additive: contribution FK + method + recorded_by). Her
+    existing code keeps working untouched.
+  * The bridge introspects the app registry at call time. If "our" fields
+    aren't there yet, it returns safe defaults (nothing collected, nobody paid)
+    and the manual-mark helper raises a clear error instead of guessing.
 """
 
 from decimal import Decimal
 
 from django.apps import apps as django_apps
 
-# Matches apps.payments.models.Payment.STATUS_SUCCESS on the payments branch.
+# Matches apps.payments.models.Payment statuses.
+STATUS_PENDING = 'pending'
 STATUS_SUCCESS = 'success'
+
+# Payment method: online via Paystack, or manually recorded by a rep/admin.
+METHOD_ONLINE = 'online'
+METHOD_MANUAL = 'manual'
 
 
 def payment_model():
@@ -40,12 +40,16 @@ def payment_model():
     return None
 
 
+def _has_field(pm, name):
+    return any(f.name == name for f in pm._meta.get_fields())
+
+
 def has_contribution_link(pm=None):
-    """True only when Payment has a `contribution` FK (post-integration)."""
+    """True only when Payment has both `contribution` + `method` (our fields)."""
     pm = pm or payment_model()
     if pm is None:
         return False
-    return any(f.name == 'contribution' for f in pm._meta.get_fields())
+    return _has_field(pm, 'contribution') and _has_field(pm, 'method')
 
 
 def payments_for(contribution):
@@ -87,9 +91,8 @@ def payment_status_map(contribution):
     {student_id: {'status': ..., 'paid_at': ...}} for this contribution.
 
     ``paid_at`` maps to the payment row's ``updated_at`` once a status of
-    ``success`` is reached (the payment row's last change is the settle time).
-    Returns {} when the payments app isn't linked yet, so callers treat every
-    eligible student as unpaid.
+    ``success`` is reached. Returns {} when the payments app isn't linked yet,
+    so callers treat every eligible student as unpaid.
     """
     qs = payments_for(contribution)
     if qs is None:
@@ -102,3 +105,41 @@ def payment_status_map(contribution):
         }
         for row in rows
     }
+
+
+def already_paid(contribution, student):
+    """True if there is already a successful payment banked for this student."""
+    qs = payments_for(contribution)
+    if qs is None:
+        return False
+    return qs.filter(student=student, status=STATUS_SUCCESS).exists()
+
+
+def mark_manually_paid(contribution, student, recorded_by):
+    """
+    Bank a successful manual payment (offline cash/transfer) for a student.
+
+    The amount ALWAYS comes from the contribution (server-side), never from the
+    client. Returns the created Payment. Raises ValueError if the payments app
+    isn't linked yet (call it only once our additive migration is applied).
+    """
+    pm = payment_model()
+    if pm is None or not has_contribution_link(pm):
+        raise ValueError(
+            "payments app not yet linked for manual marking "
+            "(contribution FK/method migration not applied)"
+        )
+
+    created = pm.objects.create(
+        student=student,
+        contribution=contribution,
+        payment_type=contribution.title[:30],  # keep existing NOT NULL column valid
+        amount=contribution.amount,
+        reference=(
+            f"MANUAL-{contribution.id}-{student.id}"
+        ),
+        status=STATUS_SUCCESS,
+        method=METHOD_MANUAL,
+        recorded_by=recorded_by,
+    )
+    return created

@@ -98,8 +98,9 @@ class ContributionSummaryView(APIView):
         contribution = get_object_or_404(_visible_contributions(request.user), pk=pk)
         return Response(
             {
-                'total_expected': str(contribution.total_expected()),
-                'total_collected': str(contribution.total_collected()),
+                # Money is always a 2-decimal string (frontend displays as-is).
+                'total_expected': f"{contribution.total_expected():.2f}",
+                'total_collected': f"{contribution.total_collected():.2f}",
                 'outstanding_count': contribution.outstanding_count(),
             }
         )
@@ -132,3 +133,70 @@ class ContributionPaymentsView(APIView):
                 }
             )
         return Response(rows)
+
+    def post(self, request, pk):
+        """
+        POST /contributions/{id}/payments/ — class rep/admin only.
+
+        Mark a student as paid WITHOUT an online gateway transaction, for when
+        a student has paid offline (cash, transfer). The amount ALWAYS comes
+        from the contribution, server-side — the student is never asked for a
+        price.
+        """
+        contribution = get_object_or_404(_visible_contributions(request.user), pk=pk)
+        matric_number = request.data.get('matric_number')
+        if not matric_number:
+            return Response(
+                {'error': 'bad_request', 'message': 'matric_number is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        student = User.objects.filter(matric_number=matric_number).first()
+        if student is None:
+            return Response(
+                {'error': 'not_found', 'message': 'No student with that matric number.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        # The marked student must belong to THIS contribution's department
+        # (prevents a rep from marking a student from another dept on a fee
+        # they don't owe).
+        if student.department_id != contribution.department_id:
+            return Response(
+                {'error': 'bad_request', 'message': 'Student is not in this department.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # A rep cannot mark themselves as paid — only a real admin may.
+        if student.id == request.user.id and request.user.role != User.ROLE_ADMIN:
+            return Response(
+                {'error': 'forbidden', 'message': 'You cannot mark yourself as paid.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if payments_bridge.already_paid(contribution, student):
+            return Response(
+                {
+                    'error': 'already_paid',
+                    'message': 'This student already has a successful payment for this contribution.',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            payment = payments_bridge.mark_manually_paid(contribution, student, request.user)
+        except ValueError as exc:
+            return Response(
+                {'error': 'unavailable', 'message': str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(
+            {
+                'student': _display_name(student),
+                'matric_number': student.matric_number,
+                'status': payment.status,
+                'paid_at': payment.updated_at,
+                'method': payment.method,
+            },
+            status=status.HTTP_201_CREATED,
+        )

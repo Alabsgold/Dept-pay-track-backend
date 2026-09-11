@@ -159,3 +159,16 @@ class UsersAuthTests(APITestCase):
         response = self.client.post(reverse('auth-logout'))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertFalse(Token.objects.filter(key=self.token.key).exists())
+
+    def test_login_is_rate_limited(self):
+        # Real configured scope/rate is 'auth': 10/min (settings.py).
+        # 10 attempts pass, the 11th within the same minute is throttled.
+        from django.core.cache import cache
+
+        cache.clear()
+        payload = {"username": "testuser", "password": "securepassword123"}
+        for _ in range(10):
+            self.client.post(reverse('auth-login'), payload)
+        response = self.client.post(reverse('auth-login'), payload)
+        cache.clear()
+        self.assertEqual(response.status_code, 429)

@@ -215,11 +215,96 @@ class ContributionTests(APITestCase):
         for row in r.data:
             self.assertEqual(sorted(row.keys()),
                              sorted(['student', 'matric_number', 'status', 'paid_at']))
-            # No Payment model linked yet => everyone honestly pending.
-            self.assertEqual(row['status'], 'pending')
-            self.assertIsNone(row['paid_at'])
 
     def test_payments_status_accepts_admin(self):
         self._auth(self.admin)
         r = self.client.get(reverse('contribution-payments', args=[self.contribution.pk]))
         self.assertEqual(r.status_code, 200)
+
+    # --- mark as paid (offline) ---
+
+    def test_student_cannot_mark_paid(self):
+        token, _ = Token.objects.get_or_create(user=self.student)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': self.student.matric_number},
+            format='json',
+            HTTP_AUTHORIZATION='Token ' + token.key)
+        self.assertEqual(r.status_code, 403)
+
+    def test_rep_marks_student_paid(self):
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': self.student.matric_number},
+            format='json')
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.data['status'], 'success')
+        self.assertEqual(r.data['method'], 'manual')
+        self.assertEqual(r.data['matric_number'], 'CSC/2021/001')
+
+        # Downstream logic now lights up: has_paid is True, summary reflects it.
+        self.assertTrue(self.contribution.has_paid(self.student))
+        summary = self.client.get(
+            reverse('contribution-summary', args=[self.contribution.pk]))
+        self.assertEqual(summary.data['total_collected'], '3500.00')
+
+    def test_rep_cannot_mark_self(self):
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': self.rep.matric_number},
+            format='json')
+        self.assertEqual(r.status_code, 403)
+
+    def test_admin_can_mark_self(self):
+        self._auth(self.admin)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': self.admin.matric_number},
+            format='json')
+        self.assertEqual(r.status_code, 201)
+
+    def test_duplicate_mark_returns_409(self):
+        self._auth(self.rep)
+        url = reverse('contribution-payments', args=[self.contribution.pk])
+        self.client.post(url, {'matric_number': self.student.matric_number}, format='json')
+        r = self.client.post(url, {'matric_number': self.student.matric_number}, format='json')
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.data['error'], 'already_paid')
+
+    def test_mark_student_from_other_department_rejected(self):
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': self.other_student.matric_number},
+            format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_mark_nonexistent_student_404(self):
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': 'NOPE/0000/999'},
+            format='json')
+        self.assertEqual(r.status_code, 404)
+
+    def test_mark_missing_matric_400(self):
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {},
+            format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_cross_department_rep_cannot_mark(self):
+        # A rep from another department can't even see the contribution (404).
+        rep_other = self._u('repother', 'repother@school.edu.ng', 'LAW/2021/002',
+                            self.other_dept, '500', User.ROLE_CLASS_REP)
+        token, _ = Token.objects.get_or_create(user=rep_other)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': self.student.matric_number},
+            format='json',
+            HTTP_AUTHORIZATION='Token ' + token.key)
+        self.assertEqual(r.status_code, 404)

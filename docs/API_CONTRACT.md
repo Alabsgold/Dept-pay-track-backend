@@ -112,6 +112,24 @@ This is the gap `outstanding-students` (section 6) didn't cover — that endpoin
 owes money; this one shows everyone's status, paid or not, which a class rep will want for a
 full picture.
 
+**POST /contributions/{id}/payments/**  — NEW (class rep/admin only)
+Marks a student as paid **without** an online gateway transaction — for when a student has
+paid offline (cash, transfer) and the class rep updates the record on their behalf. The
+amount is ALWAYS the contribution's amount, set server-side; the student is never asked for
+a price.
+
+```json
+// Request
+{ "matric_number": "CSC/2021/045" }
+
+// Response  201
+{ "student": "Chidi Okafor", "matric_number": "CSC/2021/045", "status": "success",
+  "paid_at": "2026-09-10T12:00:00Z", "method": "manual" }
+```
+
+If the student already has a `success` payment (online or manual) for this contribution,
+returns `409 already_paid` — same rule as `/payments/initiate/`.
+
 ---
 
 ## 4. Payments  ⚠️ most important section for the Payment Gateway person
