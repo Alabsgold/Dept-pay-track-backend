@@ -9,28 +9,26 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'student',
+            'contribution',
             'payment_type',
             'amount',
             'reference',
             'status',
+            'method',
             'created_at',
             'updated_at',
         ]
         read_only_fields = [
             'id',
             'student',
+            'contribution',
+            'amount',       # server-side only: comes from the contribution, never the client
             'reference',
             'status',
+            'method',
             'created_at',
             'updated_at',
         ]
-
-    def validate_amount(self, value):
-        if value <= 0:
-            raise serializers.ValidationError(
-                'Amount must be greater than zero.'
-            )
-        return value
 
     def validate_payment_type(self, value):
         valid_types = [

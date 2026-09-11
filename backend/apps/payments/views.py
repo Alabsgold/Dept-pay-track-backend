@@ -4,13 +4,14 @@ import hmac
 import json
 
 from django.conf import settings
+from django.db.models import Q
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.contributions.models import Contribution
 from .models import Payment
 from .serializers import PaymentSerializer
-from .permissions import IsAdminUser
 
 
 class PaymentListView(generics.ListAPIView):
@@ -25,38 +26,42 @@ class InitializePaymentView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        payment_type = request.data.get('payment_type')
-        amount = request.data.get('amount')
-
-        if not payment_type or not amount:
+        contribution_id = request.data.get('contribution_id')
+        if not contribution_id:
             return Response(
-                {'error': 'payment_type and amount are required.'},
+                {'error': 'bad_request', 'message': 'contribution_id is required.'},
                 status=400
             )
 
-        valid_types = [
-            Payment.PAYMENT_DEPARTMENTAL_FEE,
-            Payment.PAYMENT_SPORTS_JERSEY,
-            Payment.PAYMENT_EXCURSION,
-        ]
-
-        if payment_type not in valid_types:
+        # Scope the fee to THIS student's department + level, exactly like the
+        # contributions list — a student may only pay fees that exist for them.
+        user = request.user
+        contribution = Contribution.objects.filter(
+            id=contribution_id,
+            department=user.department,
+        ).filter(
+            Q(target_level__isnull=True) | Q(target_level=user.level)
+        ).first()
+        if contribution is None:
             return Response(
-                {'error': 'Invalid payment type.'},
-                status=400
+                {'error': 'not_found', 'message': 'Contribution not found or not available to you.'},
+                status=404
             )
 
-        try:
-            amount = float(amount)
-
-            if amount <= 0:
-                raise ValueError
-
-        except (ValueError, TypeError):
+        # Duplicate protection: if already paid successfully, block re-payment.
+        if Payment.objects.filter(
+            student=user,
+            contribution=contribution,
+            status=Payment.STATUS_SUCCESS,
+        ).exists():
             return Response(
-                {'error': 'Amount must be a valid number greater than zero.'},
-                status=400
+                {'error': 'already_paid', 'message': 'You have already paid for this contribution.'},
+                status=409
             )
+
+        # The amount ALWAYS comes from the contribution — the student never
+        # types a price. Server-side only.
+        amount = contribution.amount
 
         amount_in_kobo = int(amount * 100)
 
@@ -70,11 +75,18 @@ class InitializePaymentView(APIView):
             'amount': amount_in_kobo,
         }
 
-        response = requests.post(
-            'https://api.paystack.co/transaction/initialize',
-            headers=headers,
-            json=data
-        )
+        try:
+            response = requests.post(
+                'https://api.paystack.co/transaction/initialize',
+                headers=headers,
+                json=data,
+                timeout=10
+            )
+        except requests.exceptions.RequestException:
+            return Response(
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
+                status=502
+            )
 
         result = response.json()
 
@@ -89,10 +101,12 @@ class InitializePaymentView(APIView):
 
         payment = Payment.objects.create(
             student=request.user,
-            payment_type=payment_type,
+            contribution=contribution,
+            payment_type=contribution.title[:30],  # keep the legacy column valid
             amount=amount,
             reference=result['data']['reference'],
             status=Payment.STATUS_PENDING,
+            method=Payment.METHOD_ONLINE,
         )
 
         return Response({
@@ -112,7 +126,11 @@ class VerifyPaymentView(APIView):
             'Authorization': f'Bearer {settings.PAYSTACK_SECRET_KEY}',
         }
 
-        response = requests.get(url, headers=headers)
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
         result = response.json()
 
         if not result.get('status'):
@@ -153,13 +171,6 @@ class PaymentDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         return Payment.objects.filter(student=self.request.user)
 
-class AdminPaymentListView(generics.ListAPIView):
-    serializer_class = PaymentSerializer
-    permission_classes = [IsAdminUser]
-
-    def get_queryset(self):
-        return Payment.objects.all()
-
 class PaystackWebhookView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -183,7 +194,8 @@ class PaystackWebhookView(APIView):
         if not hmac.compare_digest(signature, expected_signature):
             return Response(
                 {'error': 'Invalid signature.'},
-                status=401
+                # Contract §7: invalid webhook signature → 400, not 401.
+                status=400
             )
 
         data = json.loads(payload)
@@ -197,6 +209,19 @@ class PaystackWebhookView(APIView):
             ).first()
 
             if payment:
+                # Idempotency: a retried webhook must not re-process/overwrite.
+                if payment.status == Payment.STATUS_SUCCESS:
+                    return Response({'message': 'Webhook received.'})
+
+                # The paid amount MUST match the expected fee (in kobo).
+                # Otherwise a validly-signed webhook for the wrong amount
+                # would mark a payment as paid for less than it should be.
+                paid_kobo = transaction.get('amount')
+                if paid_kobo is None or int(paid_kobo) != int(payment.amount * 100):
+                    payment.status = Payment.STATUS_FAILED
+                    payment.save()
+                    return Response({'message': 'Webhook received.'})
+
                 payment.status = Payment.STATUS_SUCCESS
                 payment.save()
 

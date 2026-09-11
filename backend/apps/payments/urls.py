@@ -5,16 +5,14 @@ from .views import (
     InitializePaymentView,
     VerifyPaymentView,
     PaymentDetailView,
-    AdminPaymentListView,
     PaystackWebhookView,
 )
 
 
 urlpatterns = [
-    path('', PaymentListView.as_view(), name='payment-list'),
-    path('initialize/', InitializePaymentView.as_view(), name='payment-initialize'),
+    path('history/', PaymentListView.as_view(), name='payment-history'),
+    path('initiate/', InitializePaymentView.as_view(), name='payment-initiate'),
     path('verify/<str:reference>/', VerifyPaymentView.as_view(), name='payment-verify'),
-    path('<int:pk>/', PaymentDetailView.as_view(), name='payment-detail'),
-    path('admin/', AdminPaymentListView.as_view(), name='admin-payment-list'),
+    path('<int:pk>/receipt/', PaymentDetailView.as_view(), name='payment-receipt'),
     path('webhook/', PaystackWebhookView.as_view(), name='paystack-webhook'),
 ]
