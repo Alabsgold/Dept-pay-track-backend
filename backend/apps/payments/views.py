@@ -102,7 +102,9 @@ class InitializePaymentView(APIView):
         payment = Payment.objects.create(
             student=request.user,
             contribution=contribution,
-            payment_type=contribution.title[:30],  # keep the legacy column valid
+            # The contribution FK is the fee identity; this legacy column just
+            # needs a valid choice value (never truncate the title into it).
+            payment_type=Payment.PAYMENT_CONTRIBUTION,
             amount=amount,
             reference=result['data']['reference'],
             status=Payment.STATUS_PENDING,
@@ -120,25 +122,8 @@ class VerifyPaymentView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, reference):
-        url = f'https://api.paystack.co/transaction/verify/{reference}'
-
-        headers = {
-            'Authorization': f'Bearer {settings.PAYSTACK_SECRET_KEY}',
-        }
-
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=10
-        )
-        result = response.json()
-
-        if not result.get('status'):
-            return Response(
-                {'error': 'Unable to verify payment.', 'details': result},
-                status=400
-            )
-
+        # Resolve the payment LOCALLY first — an unknown reference should not
+        # cost a round-trip to Paystack, and the local row is what we update.
         payment = Payment.objects.filter(
             reference=reference,
             student=request.user
@@ -148,6 +133,33 @@ class VerifyPaymentView(APIView):
             return Response(
                 {'error': 'Payment not found.'},
                 status=404
+            )
+
+        url = f'https://api.paystack.co/transaction/verify/{reference}'
+
+        headers = {
+            'Authorization': f'Bearer {settings.PAYSTACK_SECRET_KEY}',
+        }
+
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=10
+            )
+        except requests.exceptions.RequestException:
+            # Gateway outage/timeout — our row stays untouched and the client
+            # can retry, mirroring InitializePaymentView's 502 contract.
+            return Response(
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
+                status=502
+            )
+        result = response.json()
+
+        if not result.get('status'):
+            return Response(
+                {'error': 'Unable to verify payment.', 'details': result},
+                status=400
             )
 
         paystack_status = result['data']['status']

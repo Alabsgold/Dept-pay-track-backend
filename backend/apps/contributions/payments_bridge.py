@@ -133,7 +133,7 @@ def mark_manually_paid(contribution, student, recorded_by):
     created = pm.objects.create(
         student=student,
         contribution=contribution,
-        payment_type=contribution.title[:30],  # keep existing NOT NULL column valid
+        payment_type='contribution',  # matches Payment.PAYMENT_CONTRIBUTION (bridge avoids importing the payments model)
         amount=contribution.amount,
         reference=(
             f"MANUAL-{contribution.id}-{student.id}"

@@ -35,6 +35,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             Payment.PAYMENT_DEPARTMENTAL_FEE,
             Payment.PAYMENT_SPORTS_JERSEY,
             Payment.PAYMENT_EXCURSION,
+            Payment.PAYMENT_CONTRIBUTION,
         ]
 
         if value not in valid_types:

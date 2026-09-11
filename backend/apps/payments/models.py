@@ -11,6 +11,10 @@ class Payment(models.Model):
         (PAYMENT_DEPARTMENTAL_FEE, 'Departmental Fee'),
         (PAYMENT_SPORTS_JERSEY, 'Sports Jersey'),
         (PAYMENT_EXCURSION, 'Excursion'),
+        # Contribution-linked payments (online via Paystack or manually marked).
+        # Every such Payment carries a `contribution` FK, which — not this legacy
+        # column — is the real fee identity. Legacy choices kept for old rows.
+        (PAYMENT_CONTRIBUTION := 'contribution', 'Contribution'),
     ]
 
     # Payment method: how the money was recorded (online via Paystack, or manual

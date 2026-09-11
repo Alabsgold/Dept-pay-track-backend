@@ -28,3 +28,6 @@ ENV/
 .idea/
 *.swp
 *.swo
+
+# Backend Max diagnostic data
+.backend-doctor/
