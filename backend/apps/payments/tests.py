@@ -343,6 +343,57 @@ class PaymentTests(APITestCase):
         payment.refresh_from_db()
         self.assertEqual(payment.status, Payment.STATUS_SUCCESS)
 
+    # --- verify: non-terminal gateway statuses must never mean "failed" ---
+
+    def test_verify_keeps_abandoned_charge_pending(self):
+        payment = Payment.objects.create(
+            student=self.user,
+            contribution=self.contribution,
+            payment_type=Payment.PAYMENT_DEPARTMENTAL_FEE,
+            amount=Decimal('3500.00'),
+            reference='REF-VERIFY-ABANDONED',
+            status=Payment.STATUS_PENDING,
+        )
+
+        # 'abandoned' = the student closed the checkout. That is not a decline,
+        # and Paystack sends no webhook for it, so the row must stay pending
+        # (retrying is already allowed) instead of flipping to failed.
+        with patch('apps.payments.views.requests.get') as mock_get:
+            mock_get.return_value.json.return_value = {
+                'status': True,
+                'data': {'status': 'abandoned'},
+            }
+            response = self.client.get(
+                '/api/payments/verify/REF-VERIFY-ABANDONED/'
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.STATUS_PENDING)
+
+    def test_verify_marks_a_declined_charge_failed(self):
+        payment = Payment.objects.create(
+            student=self.user,
+            contribution=self.contribution,
+            payment_type=Payment.PAYMENT_DEPARTMENTAL_FEE,
+            amount=Decimal('3500.00'),
+            reference='REF-VERIFY-DECLINED',
+            status=Payment.STATUS_PENDING,
+        )
+
+        with patch('apps.payments.views.requests.get') as mock_get:
+            mock_get.return_value.json.return_value = {
+                'status': True,
+                'data': {'status': 'failed'},
+            }
+            response = self.client.get(
+                '/api/payments/verify/REF-VERIFY-DECLINED/'
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.STATUS_FAILED)
+
     def _get_secret_key(self):
         from django.conf import settings
         return settings.PAYSTACK_SECRET_KEY.encode()

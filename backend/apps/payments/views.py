@@ -198,12 +198,18 @@ class VerifyPaymentView(APIView):
 
         paystack_status = result['data'].get('status')
 
-        if paystack_status == 'success':
-            payment.status = Payment.STATUS_SUCCESS
-        else:
-            payment.status = Payment.STATUS_FAILED
-
-        payment.save()
+        # Only a TERMINAL outcome may change our row. Paystack's non-terminal
+        # statuses — 'abandoned' (student closed the checkout) and 'pending' /
+        # 'ongoing' / 'processing' (charge not settled yet) — must leave the
+        # payment exactly as it is. Paystack raises no `charge.failed` webhook
+        # event, so treating "not success (yet)" as failure here was what
+        # flipped payments to `failed` that were never actually declined.
+        if paystack_status in ('success', 'failed', 'reversed'):
+            payment.status = (
+                Payment.STATUS_SUCCESS if paystack_status == 'success'
+                else Payment.STATUS_FAILED
+            )
+            payment.save()
 
         return Response({
             'message': 'Payment verification completed.',

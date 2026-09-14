@@ -35,7 +35,11 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=Csv(
 AUTH_USER_MODEL = 'users.User'
 
 # Paystack settings
-PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY', default='')
+# No default: the secret key is the webhook HMAC key, so an empty value would
+# let anyone forge a valid signature. Fail loudly instead, like SECRET_KEY above.
+# The public key is only ever used by the frontend, so a missing value here is
+# harmless and stays optional.
+PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY')
 PAYSTACK_PUBLIC_KEY = config('PAYSTACK_PUBLIC_KEY', default='')
 
 # Application definition
