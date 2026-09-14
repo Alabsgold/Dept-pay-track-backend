@@ -33,6 +33,16 @@ class InitializePaymentView(APIView):
                 status=400
             )
 
+        # A non-numeric id would raise inside the ORM lookup and crash the
+        # request with a 500 — reject it cleanly instead.
+        try:
+            contribution_id = int(contribution_id)
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'bad_request', 'message': 'contribution_id must be a number.'},
+                status=400
+            )
+
         # Scope the fee to THIS student's department + level, exactly like the
         # contributions list — a student may only pay fees that exist for them.
         user = request.user
@@ -88,9 +98,22 @@ class InitializePaymentView(APIView):
                 status=502
             )
 
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError:
+            # Non-JSON body (e.g. a proxy's HTML error page) — fail cleanly.
+            return Response(
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway returned an invalid response. Try again shortly.'},
+                status=502
+            )
 
-        if not result.get('status'):
+        result_data = result.get('data') or {}
+
+        if (
+            not result.get('status')
+            or not result_data.get('reference')
+            or not result_data.get('authorization_url')
+        ):
             return Response(
                 {
                     'error': 'Unable to initialize payment.',
@@ -106,15 +129,19 @@ class InitializePaymentView(APIView):
             # needs a valid choice value (never truncate the title into it).
             payment_type=Payment.PAYMENT_CONTRIBUTION,
             amount=amount,
-            reference=result['data']['reference'],
+            reference=result_data['reference'],
             status=Payment.STATUS_PENDING,
             method=Payment.METHOD_ONLINE,
         )
 
         return Response({
             'message': 'Payment initialized successfully.',
+            # Contract §4 keys — the frontend reads checkout_url.
+            'reference': payment.reference,
+            'checkout_url': result_data['authorization_url'],
+            # Kept for backward compatibility with earlier integrations.
+            'authorization_url': result_data['authorization_url'],
             'payment': PaymentSerializer(payment).data,
-            'authorization_url': result['data']['authorization_url'],
         })
 
 
@@ -154,15 +181,22 @@ class VerifyPaymentView(APIView):
                 {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
                 status=502
             )
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError:
+            # Non-JSON body (e.g. a proxy's HTML error page) — fail cleanly.
+            return Response(
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway returned an invalid response. Try again shortly.'},
+                status=502
+            )
 
-        if not result.get('status'):
+        if not result.get('status') or not result.get('data'):
             return Response(
                 {'error': 'Unable to verify payment.', 'details': result},
                 status=400
             )
 
-        paystack_status = result['data']['status']
+        paystack_status = result['data'].get('status')
 
         if paystack_status == 'success':
             payment.status = Payment.STATUS_SUCCESS
@@ -210,7 +244,19 @@ class PaystackWebhookView(APIView):
                 status=400
             )
 
-        data = json.loads(payload)
+        try:
+            data = json.loads(payload)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Invalid payload.'},
+                status=400
+            )
+
+        if not isinstance(data, dict):
+            return Response(
+                {'error': 'Invalid payload.'},
+                status=400
+            )
 
         if data.get('event') == 'charge.success':
             transaction = data.get('data', {})
@@ -223,7 +269,7 @@ class PaystackWebhookView(APIView):
             if payment:
                 # Idempotency: a retried webhook must not re-process/overwrite.
                 if payment.status == Payment.STATUS_SUCCESS:
-                    return Response({'message': 'Webhook received.'})
+                    return Response({'received': True})
 
                 # The paid amount MUST match the expected fee (in kobo).
                 # Otherwise a validly-signed webhook for the wrong amount
@@ -232,9 +278,9 @@ class PaystackWebhookView(APIView):
                 if paid_kobo is None or int(paid_kobo) != int(payment.amount * 100):
                     payment.status = Payment.STATUS_FAILED
                     payment.save()
-                    return Response({'message': 'Webhook received.'})
+                    return Response({'received': True})
 
                 payment.status = Payment.STATUS_SUCCESS
                 payment.save()
 
-        return Response({'message': 'Webhook received.'})
+        return Response({'received': True})

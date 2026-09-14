@@ -25,5 +25,7 @@ urlpatterns = [
 
     path('api/contributions/', include('apps.contributions.urls')),
 
+    path('api/notifications/', include('apps.notifications.urls')),
+
 ]
 

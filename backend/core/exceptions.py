@@ -42,7 +42,13 @@ def custom_exception_handler(exc, context):
                     err_str = " ".join(str(e) for e in errors)
                 else:
                     err_str = str(errors)
-                messages.append(f"{field}: {err_str}")
+                # Non-field errors stay field-anonymous (QA M-6): the §8
+                # generic duplicate-registration message must not reveal —
+                # not even via a prefix — which identifier collided.
+                if field == 'non_field_errors':
+                    messages.append(err_str)
+                else:
+                    messages.append(f"{field}: {err_str}")
             combined_message = "; ".join(messages)
             response.data = {
                 "error": "bad_request",

@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from .models import Department, User
 
 
@@ -11,6 +12,20 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
+    # These three are declared EXPLICITLY (not left to ModelSerializer
+    # auto-generation) on purpose: auto-generated fields get DRF's
+    # UniqueValidator, whose message leaks WHICH identifier already exists
+    # ("User with this matric number already exists.") — a §8 account-
+    # enumeration violation caught by QA (M-5). Duplicates are handled
+    # generically, field-anonymously, in validate() below. The model's DB
+    # unique constraints remain as the backstop (a concurrent exact race
+    # fails safe with a 500, creating no account).
+    username = serializers.CharField(
+        max_length=150,
+        validators=[UnicodeUsernameValidator()],
+    )
+    email = serializers.EmailField()
+    matric_number = serializers.CharField(max_length=50)
     password = serializers.CharField(write_only=True, min_length=8)
     department_id = serializers.PrimaryKeyRelatedField(
         queryset=Department.objects.all(),
@@ -43,18 +58,28 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     def validate_matric_number(self, value):
         if not value:
             raise serializers.ValidationError("Matric number is required.")
-        # Case-insensitive check + generic message to prevent account enumeration.
-        if User.objects.filter(matric_number__iexact=value).exists():
-            raise serializers.ValidationError("Unable to register with the provided details.")
         return value
 
-    def validate_email(self, value):
-        if not value:
-            raise serializers.ValidationError("Email is required.")
-        # Case-insensitive check + generic message to prevent account enumeration.
-        if User.objects.filter(email__iexact=value).exists():
-            raise serializers.ValidationError("Unable to register with the provided details.")
-        return value
+    def validate(self, attrs):
+        # §8 anti-enumeration: ONE generic message for ANY duplicate
+        # identifier (username, email or matric — case-insensitive). Raised
+        # as a NON-FIELD error so core.exceptions cannot prefix the field
+        # name (QA M-6: the prefix revealed which identifier collided).
+        if (
+            User.objects.filter(
+                username__iexact=attrs.get('username', '')
+            ).exists()
+            or User.objects.filter(
+                email__iexact=attrs.get('email', '')
+            ).exists()
+            or User.objects.filter(
+                matric_number__iexact=attrs.get('matric_number', '')
+            ).exists()
+        ):
+            raise serializers.ValidationError(
+                "Unable to register with the provided details."
+            )
+        return attrs
 
     def create(self, validated_data):
         password = validated_data.pop('password')

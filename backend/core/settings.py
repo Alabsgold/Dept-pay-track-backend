@@ -58,6 +58,8 @@ INSTALLED_APPS = [
 
     'apps.contributions',
 
+    'apps.notifications',
+
 ]
 
 MIDDLEWARE = [
