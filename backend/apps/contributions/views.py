@@ -166,6 +166,21 @@ class ContributionPaymentsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Level-targeted fees too: marking a student who does not owe this fee
+        # would bank a success row we then count as collected, inflating the
+        # totals with money that was never due.
+        if (
+            contribution.target_level
+            and student.level != contribution.target_level
+        ):
+            return Response(
+                {
+                    'error': 'bad_request',
+                    'message': 'This contribution does not apply to that student\'s level.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # A rep cannot mark themselves as paid — only a real admin may.
         if student.id == request.user.id and request.user.role != User.ROLE_ADMIN:
             return Response(
@@ -182,8 +197,23 @@ class ContributionPaymentsView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        receipt_reference = (request.data.get('receipt_reference') or '').strip()
+        if not receipt_reference:
+            return Response(
+                {
+                    'error': 'bad_request',
+                    'message': (
+                        'receipt_reference is required — quote the teller/receipt '
+                        'number so offline payments can be audited.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
-            payment = payments_bridge.mark_manually_paid(contribution, student, request.user)
+            payment = payments_bridge.mark_manually_paid(
+                contribution, student, request.user, receipt_reference
+            )
         except ValueError as exc:
             return Response(
                 {'error': 'unavailable', 'message': str(exc)},

@@ -37,6 +37,23 @@ class Payment(models.Model):
         (STATUS_FAILED, 'Failed'),
     ]
 
+    # Refund-review states. When the gateway banks money we cannot credit to
+    # the fee — a wrong amount, or a fee the student had already paid — the row
+    # is failed and the money is FLAGGED for a human to review. Refunds are
+    # never issued automatically: moving money back is irreversible, so a
+    # person reviews first. 'refunded'/'rejected' are set by that reviewer.
+    REFUND_NONE = 'none'
+    REFUND_PENDING_REVIEW = 'pending_review'
+    REFUND_REFUNDED = 'refunded'
+    REFUND_REJECTED = 'rejected'
+
+    REFUND_STATUS_CHOICES = [
+        (REFUND_NONE, 'No refund due'),
+        (REFUND_PENDING_REVIEW, 'Refund pending review'),
+        (REFUND_REFUNDED, 'Refunded'),
+        (REFUND_REJECTED, 'Reviewed, no refund due'),
+    ]
+
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -58,6 +75,16 @@ class Payment(models.Model):
         max_length=10,
         choices=METHOD_CHOICES,
         default=METHOD_ONLINE,
+    )
+
+    # Offline-payment audit hook: the teller slip / receipt-book number the
+    # rep quotes when marking a student paid manually. Empty for online
+    # payments — this is what makes manual marks reconcilable with the
+    # department's cash book instead of pure trust.
+    receipt_reference = models.CharField(
+        max_length=50,
+        blank=True,
+        default='',
     )
 
     recorded_by = models.ForeignKey(
@@ -87,6 +114,24 @@ class Payment(models.Model):
         max_length=20,
         choices=STATUS_CHOICES,
         default=STATUS_PENDING
+    )
+
+    # What the gateway actually charged (naira, 2dp). `amount` stays the AGREED
+    # fee; this is what really left the student's account, so the pair is the
+    # reconciliation record. Null for manual (offline) entries and for rows
+    # where the gateway never reported an amount.
+    paid_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+
+    refund_status = models.CharField(
+        max_length=20,
+        choices=REFUND_STATUS_CHOICES,
+        default=REFUND_NONE,
+        db_index=True,
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

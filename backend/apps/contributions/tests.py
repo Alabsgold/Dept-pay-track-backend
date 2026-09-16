@@ -7,6 +7,7 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
+from apps.payments.models import Payment
 from apps.users.models import Department, User
 
 from .models import Contribution
@@ -59,6 +60,58 @@ class ContributionTests(APITestCase):
             reverse('contribution-list-create'), payload or self._payload(), format='json')
 
     # --- auth guards ---
+
+    def test_roster_shows_success_even_when_an_older_attempt_failed(self):
+        # The roster must never report a paid student as unpaid: a stale failed
+        # attempt must not mask the successful one (the pre-fix map let the
+        # OLDEST row win, because rows are newest-first).
+        Payment.objects.create(
+            student=self.student, contribution=self.contribution,
+            payment_type='contribution', amount=Decimal('3500.00'),
+            reference='ROSTER-OLD-FAILED', status='failed',
+            method='online')
+        Payment.objects.create(
+            student=self.student, contribution=self.contribution,
+            payment_type='contribution', amount=Decimal('3500.00'),
+            reference='ROSTER-NEW-SUCCESS', status='success',
+            method='online')
+
+        self._auth(self.rep)
+        r = self.client.get(
+            reverse('contribution-payments', args=[self.contribution.pk]))
+
+        self.assertEqual(r.status_code, 200)
+        row = next(x for x in r.data if x['matric_number'] == 'CSC/2021/001')
+        self.assertEqual(row['status'], 'success')
+        self.assertIsNotNone(row['paid_at'])
+        # ...and the money is counted once, not twice.
+        self.assertEqual(self.contribution.total_collected(), Decimal('3500.00'))
+
+    def test_mark_paid_rejects_student_outside_the_target_level(self):
+        # A level-targeted fee must not be markable for the wrong level; the
+        # bogus success row would inflate collected totals.
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.level100_only.pk]),
+            {'matric_number': self.student.matric_number},  # level 400
+            format='json')
+
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.data['error'], 'bad_request')
+        self.assertFalse(self.level100_only.has_paid(self.student))
+
+    def test_mark_paid_accepts_student_in_the_target_level(self):
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.level100_only.pk]),
+            {
+                'matric_number': self.level100.matric_number,  # level 100
+                'receipt_reference': 'RCPT-L100-001',
+            },
+            format='json')
+
+        self.assertEqual(r.status_code, 201)
+        self.assertTrue(self.level100_only.has_paid(self.level100))
 
     def test_unauthenticated_list_is_401(self):
         self.assertEqual(self.client.get(reverse('contribution-list-create')).status_code, 401)
@@ -185,13 +238,14 @@ class ContributionTests(APITestCase):
     # --- summary ---
 
     def test_summary_totals_are_exact_decimals(self):
-        # Eligible (target_level null): student, level100, rep, admin = 4
+        # Eligible (target_level null): student, level100, rep = 3 (the
+        # admin is exempt — only students/reps pay dues).
         self._auth(self.rep)
         r = self.client.get(reverse('contribution-summary', args=[self.contribution.pk]))
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.data['total_expected'], '14000.00')
+        self.assertEqual(r.data['total_expected'], '10500.00')
         self.assertEqual(r.data['total_collected'], '0.00')
-        self.assertEqual(r.data['outstanding_count'], 4)
+        self.assertEqual(r.data['outstanding_count'], 3)
 
     def test_summary_scoped_to_department(self):
         self._auth(self.other_student)
@@ -211,7 +265,8 @@ class ContributionTests(APITestCase):
         self._auth(self.rep)
         r = self.client.get(reverse('contribution-payments', args=[self.contribution.pk]))
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(len(r.data), 4)
+        # 3 rows: student, level100, rep — the admin is NOT owed dues.
+        self.assertEqual(len(r.data), 3)
         for row in r.data:
             self.assertEqual(sorted(row.keys()),
                              sorted(['student', 'matric_number', 'status', 'paid_at']))
@@ -236,7 +291,7 @@ class ContributionTests(APITestCase):
         self._auth(self.rep)
         r = self.client.post(
             reverse('contribution-payments', args=[self.contribution.pk]),
-            {'matric_number': self.student.matric_number},
+            {'matric_number': self.student.matric_number, 'receipt_reference': 'RCPT-001'},
             format='json')
         self.assertEqual(r.status_code, 201)
         self.assertEqual(r.data['status'], 'success')
@@ -261,15 +316,17 @@ class ContributionTests(APITestCase):
         self._auth(self.admin)
         r = self.client.post(
             reverse('contribution-payments', args=[self.contribution.pk]),
-            {'matric_number': self.admin.matric_number},
+            {'matric_number': self.admin.matric_number, 'receipt_reference': 'RCPT-ADMIN-001'},
             format='json')
         self.assertEqual(r.status_code, 201)
 
     def test_duplicate_mark_returns_409(self):
         self._auth(self.rep)
         url = reverse('contribution-payments', args=[self.contribution.pk])
-        self.client.post(url, {'matric_number': self.student.matric_number}, format='json')
-        r = self.client.post(url, {'matric_number': self.student.matric_number}, format='json')
+        self.client.post(url, {'matric_number': self.student.matric_number,
+                               'receipt_reference': 'RCPT-DUP-001'}, format='json')
+        r = self.client.post(url, {'matric_number': self.student.matric_number,
+                                   'receipt_reference': 'RCPT-DUP-002'}, format='json')
         self.assertEqual(r.status_code, 409)
         self.assertEqual(r.data['error'], 'already_paid')
 
@@ -296,6 +353,17 @@ class ContributionTests(APITestCase):
             {},
             format='json')
         self.assertEqual(r.status_code, 400)
+
+    def test_mark_without_receipt_reference_400(self):
+        # Offline marks must be auditable: no receipt number, no mark.
+        self._auth(self.rep)
+        r = self.client.post(
+            reverse('contribution-payments', args=[self.contribution.pk]),
+            {'matric_number': self.student.matric_number},
+            format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.data['error'], 'bad_request')
+        self.assertFalse(self.contribution.has_paid(self.student))
 
     def test_cross_department_rep_cannot_mark(self):
         # A rep from another department can't even see the contribution (404).

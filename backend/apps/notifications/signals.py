@@ -42,6 +42,52 @@ def snapshot_payment_status(sender, instance, **kwargs):
         instance._notif_prev_status = None
 
 
+def _failure_message(payment, fee):
+    """
+    Wording for a failed payment.
+
+    When the gateway banked money we could not credit, the row carries
+    `refund_status=pending_review` and the student is told which way the amount
+    was wrong and that a refund is under review (a human issues it — never
+    automatic). The critical facts come first so a long fee title at the end
+    can be truncated without losing them.
+    """
+    amount = f'₦{payment.amount:,.2f}'
+    title_note = (
+        f' ({payment.contribution.title})' if payment.contribution_id else ''
+    )
+
+    if payment.refund_status != Payment.REFUND_PENDING_REVIEW:
+        # Nothing was banked for us to return (e.g. a declined charge).
+        return f'Your payment of {amount}{fee} failed.'
+
+    paid = payment.paid_amount
+    if paid is None:
+        return (
+            f'Your payment of {amount}{fee} failed: the amount could not be '
+            'verified with the gateway. Flagged for review.'
+        )
+    if paid > payment.amount:
+        detail = (
+            f'you paid more than the agreed {amount} '
+            f'(over by ₦{paid - payment.amount:,.2f})'
+        )
+    elif paid < payment.amount:
+        detail = (
+            f'you paid less than the agreed {amount} '
+            f'(short by ₦{payment.amount - paid:,.2f})'
+        )
+    else:
+        detail = (
+            f'this fee had already been paid, so this extra charge of '
+            f'{amount} is a duplicate'
+        )
+    return (
+        f'Your payment of ₦{paid:,.2f} failed: {detail}. '
+        f'Flagged for refund review.{title_note}'
+    )
+
+
 @receiver(post_save, sender=Payment)
 def notify_on_payment_status_change(sender, instance, created, **kwargs):
     # New row: any terminal status counts as a transition (this is the manual
@@ -66,9 +112,18 @@ def notify_on_payment_status_change(sender, instance, created, **kwargs):
         else ''
     )
     if notification_type == Notification.TYPE_PAYMENT_SUCCESS:
-        message = f'Your payment of ₦{instance.amount:,.2f}{fee} was successful.'
+        if instance.method == Payment.METHOD_MANUAL:
+            # The rep banked this offline — the student is the best auditor:
+            # tell them, so a false mark gets reported.
+            message = (
+                f'Your class rep recorded an offline payment of '
+                f'₦{instance.amount:,.2f}{fee}. If you did not make this '
+                f'payment, report it to your department immediately.'
+            )
+        else:
+            message = f'Your payment of ₦{instance.amount:,.2f}{fee} was successful.'
     else:
-        message = f'Your payment of ₦{instance.amount:,.2f}{fee} failed.'
+        message = _failure_message(instance, fee)
 
     Notification.objects.create(
         recipient=instance.student,

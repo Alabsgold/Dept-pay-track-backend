@@ -276,7 +276,7 @@ class NotificationTests(APITestCase):
         self._auth(self.admin)
         response = self.client.post(
             f'/api/contributions/{self.contribution.id}/payments/',
-            {'matric_number': 'TEST/2026/001'},
+            {'matric_number': 'TEST/2026/001', 'receipt_reference': 'RCPT-N-001'},
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)

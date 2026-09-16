@@ -19,8 +19,10 @@ class PaymentSerializer(serializers.ModelSerializer):
             'contribution',
             'payment_type',
             'amount',
+            'paid_amount',
             'reference',
             'status',
+            'refund_status',
             'method',
             'created_at',
             'updated_at',
@@ -31,8 +33,10 @@ class PaymentSerializer(serializers.ModelSerializer):
             'student',
             'contribution',
             'amount',       # server-side only: comes from the contribution, never the client
+            'paid_amount',  # what the gateway charged — never client-supplied
             'reference',
             'status',
+            'refund_status',
             'method',
             'created_at',
             'updated_at',

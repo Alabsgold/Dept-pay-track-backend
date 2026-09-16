@@ -104,7 +104,10 @@ class PaymentContractTests(APITestCase):
         self._payment('PSK_TEST_003')
         with patch('apps.payments.views.requests.get') as mock_get:
             mock_get.return_value.json.return_value = {
-                'status': True, 'data': {'status': 'success'},
+                # Verify applies the same amount rule as the webhook, so the
+                # mocked charge must report what it took (3500.00 in kobo).
+                'status': True,
+                'data': {'status': 'success', 'amount': 350000},
             }
             response = self.client.get('/api/payments/verify/PSK_TEST_003/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)

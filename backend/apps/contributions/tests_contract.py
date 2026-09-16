@@ -100,8 +100,8 @@ class ContributionContractTests(APITestCase):
             {'total_expected', 'total_collected', 'outstanding_count'},
         )
         self.assertIsInstance(response.data['total_expected'], str)
-        # eligible_students() = every User in the department (no
-        # target_level): the student AND the rep → 2 outstanding, 0 paid.
+        # eligible_students() = department users with student/reps roles
+        # (no target_level): the student AND the rep → 2 outstanding, 0 paid.
         self.assertEqual(response.data['outstanding_count'], 2)
 
     def test_roster_returns_documented_shape(self):
@@ -130,7 +130,7 @@ class ContributionContractTests(APITestCase):
         self._auth(self.rep)
         response = self.client.post(
             f'/api/contributions/{self.contribution.id}/payments/',
-            {'matric_number': 'CSC/2021/045'},
+            {'matric_number': 'CSC/2021/045', 'receipt_reference': 'RCPT-C-001'},
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -145,12 +145,12 @@ class ContributionContractTests(APITestCase):
         self._auth(self.rep)
         first = self.client.post(
             f'/api/contributions/{self.contribution.id}/payments/',
-            {'matric_number': 'CSC/2021/045'},
+            {'matric_number': 'CSC/2021/045', 'receipt_reference': 'RCPT-C-002'},
             format='json',
         )
         second = self.client.post(
             f'/api/contributions/{self.contribution.id}/payments/',
-            {'matric_number': 'CSC/2021/045'},
+            {'matric_number': 'CSC/2021/045', 'receipt_reference': 'RCPT-C-003'},
             format='json',
         )
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)

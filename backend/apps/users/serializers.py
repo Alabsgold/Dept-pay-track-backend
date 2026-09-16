@@ -120,6 +120,16 @@ class LoginSerializer(serializers.Serializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     department = serializers.CharField(source='department.name', read_only=True)
+    # Imported rosters may have no department on file, so the student must be
+    # able to supply it. It can be filled in ONCE, then it is locked: letting
+    # a student change department freely would also let them switch out of a
+    # department that is collecting dues from them (an escape route).
+    department_id = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(),
+        source='department',
+        write_only=True,
+        required=False,
+    )
 
     class Meta:
         model = User
@@ -128,6 +138,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'username',
             'email',
             'matric_number',
+            'department_id',
             'department',
             'level',
             'role',
@@ -148,4 +159,14 @@ class UserProfileSerializer(serializers.ModelSerializer):
         # wiped to "".
         if value not in dict(User.LEVEL_CHOICES):
             raise serializers.ValidationError(f"Invalid level. Must be one of {[c[0] for c in User.LEVEL_CHOICES]}.")
+        return value
+
+    def validate_department_id(self, value):
+        # Fill-once: allowed only while the field is empty (or unchanged).
+        # Changing it afterwards is an admin action, not self-service.
+        current = self.instance.department_id if self.instance else None
+        if current and current != value.id:
+            raise serializers.ValidationError(
+                "Department is already set. Ask an admin to change it."
+            )
         return value

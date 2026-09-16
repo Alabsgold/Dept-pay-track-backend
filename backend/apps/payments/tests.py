@@ -394,6 +394,184 @@ class PaymentTests(APITestCase):
         payment.refresh_from_db()
         self.assertEqual(payment.status, Payment.STATUS_FAILED)
 
+    # --- verify: the amount rule must apply here too (money-hole guard) -----
+
+    def test_verify_with_wrong_amount_does_not_credit_success(self):
+        # The critical guard: verify used to trust Paystack's status alone, so a
+        # student who paid a wrong amount got credited anyway whenever the
+        # webhook was missed. It must apply the same amount rule as the webhook.
+        payment = Payment.objects.create(
+            student=self.user,
+            contribution=self.contribution,
+            payment_type=Payment.PAYMENT_DEPARTMENTAL_FEE,
+            amount=Decimal('3500.00'),
+            reference='REF-VERIFY-SHORT',
+            status=Payment.STATUS_PENDING,
+        )
+
+        with patch('apps.payments.views.requests.get') as mock_get:
+            mock_get.return_value.json.return_value = {
+                'status': True,
+                # 100.00 naira paid against a 3500.00 fee.
+                'data': {'status': 'success', 'amount': 10000},
+            }
+            response = self.client.get('/api/payments/verify/REF-VERIFY-SHORT/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.STATUS_FAILED)
+        self.assertEqual(payment.paid_amount, Decimal('100.00'))
+        self.assertEqual(
+            payment.refund_status, Payment.REFUND_PENDING_REVIEW
+        )
+
+    def test_verify_with_correct_amount_credits_success(self):
+        payment = Payment.objects.create(
+            student=self.user,
+            contribution=self.contribution,
+            payment_type=Payment.PAYMENT_DEPARTMENTAL_FEE,
+            amount=Decimal('3500.00'),
+            reference='REF-VERIFY-EXACT',
+            status=Payment.STATUS_PENDING,
+        )
+
+        with patch('apps.payments.views.requests.get') as mock_get:
+            mock_get.return_value.json.return_value = {
+                'status': True,
+                'data': {'status': 'success', 'amount': 350000},
+            }
+            response = self.client.get('/api/payments/verify/REF-VERIFY-EXACT/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.STATUS_SUCCESS)
+        self.assertEqual(payment.refund_status, Payment.REFUND_NONE)
+
+    # --- amount mismatch (either direction): failed + reviewed refund --------
+
+    def _webhook(self, reference, amount_kobo):
+        payload = json.dumps({
+            'event': 'charge.success',
+            'data': {'reference': reference, 'amount': amount_kobo},
+        }).encode()
+        signature = hmac.new(
+            self._get_secret_key(), payload, hashlib.sha512
+        ).hexdigest()
+        return self.client.post(
+            '/api/payments/webhook/',
+            payload,
+            content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=signature,
+        )
+
+    def _fee_payment(self, reference, amount='3500.00'):
+        return Payment.objects.create(
+            student=self.user,
+            contribution=self.contribution,
+            payment_type=Payment.PAYMENT_DEPARTMENTAL_FEE,
+            amount=Decimal(amount),
+            reference=reference,
+            status=Payment.STATUS_PENDING,
+        )
+
+    def test_webhook_overpayment_is_failed_and_flagged_for_refund(self):
+        payment = self._fee_payment('REF-OVERPAID')
+
+        # 4000.00 paid against a 3500.00 fee: the real money is banked, so the
+        # row must fail AND be flagged for a reviewed refund.
+        response = self._webhook('REF-OVERPAID', 400000)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.STATUS_FAILED)
+        self.assertEqual(payment.paid_amount, Decimal('4000.00'))
+        self.assertEqual(
+            payment.refund_status, Payment.REFUND_PENDING_REVIEW
+        )
+
+    def test_webhook_underpayment_is_failed_and_flagged_for_refund(self):
+        payment = self._fee_payment('REF-UNDERPAID')
+
+        response = self._webhook('REF-UNDERPAID', 100000)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.STATUS_FAILED)
+        self.assertEqual(payment.paid_amount, Decimal('1000.00'))
+        self.assertEqual(
+            payment.refund_status, Payment.REFUND_PENDING_REVIEW
+        )
+
+    def test_webhook_exact_amount_records_paid_amount_without_refund(self):
+        payment = self._fee_payment('REF-EXACT')
+
+        self._webhook('REF-EXACT', 350000)
+
+        payment.refresh_from_db()
+        self.assertEqual(payment.status, Payment.STATUS_SUCCESS)
+        self.assertEqual(payment.paid_amount, Decimal('3500.00'))
+        self.assertEqual(payment.refund_status, Payment.REFUND_NONE)
+
+    def test_webhook_second_charge_for_same_fee_is_flagged_not_credited(self):
+        # Two checkouts can be open at once (contract §4 allows a new attempt),
+        # and a student can pay both. The fee is credited once; the extra real
+        # charge is failed and flagged so the money gets returned.
+        first = self._fee_payment('REF-DUP-FIRST')
+        second = self._fee_payment('REF-DUP-SECOND')
+
+        self._webhook('REF-DUP-FIRST', 350000)
+        self._webhook('REF-DUP-SECOND', 350000)
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, Payment.STATUS_SUCCESS)
+        self.assertEqual(first.refund_status, Payment.REFUND_NONE)
+        self.assertEqual(second.status, Payment.STATUS_FAILED)
+        self.assertEqual(second.paid_amount, Decimal('3500.00'))
+        self.assertEqual(
+            second.refund_status, Payment.REFUND_PENDING_REVIEW
+        )
+
+    def test_reviewed_refund_flag_is_never_overwritten_by_a_retry(self):
+        # A reviewer's decision must survive Paystack retrying the webhook —
+        # otherwise a refunded charge looks unrefunded and could be refunded
+        # twice.
+        payment = self._fee_payment('REF-REFUNDED')
+        self._webhook('REF-REFUNDED', 400000)
+
+        payment.refresh_from_db()
+        payment.refund_status = Payment.REFUND_REFUNDED
+        payment.save(update_fields=['refund_status'])
+
+        self._webhook('REF-REFUNDED', 400000)
+        self._webhook('REF-REFUNDED', 400000)
+
+        payment.refresh_from_db()
+        self.assertEqual(payment.refund_status, Payment.REFUND_REFUNDED)
+        self.assertEqual(payment.paid_amount, Decimal('4000.00'))
+
+    def test_initiate_rejects_an_expired_contribution(self):
+        # The student list hides expired fees; initiate must too, or a stale id
+        # lets money be taken for a collection nobody is accepting.
+        expired = Contribution.objects.create(
+            department=self.department,
+            created_by=self.user,
+            title='Expired Dues',
+            amount=Decimal('1000.00'),
+            deadline=timezone.now() - timezone.timedelta(days=1),
+            target_level=None,
+        )
+
+        with patch('apps.payments.views.requests.post') as mock_post:
+            response = self.client.post(
+                '/api/payments/initiate/',
+                {'contribution_id': expired.id},
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_post.assert_not_called()
+
     def _get_secret_key(self):
         from django.conf import settings
         return settings.PAYSTACK_SECRET_KEY.encode()

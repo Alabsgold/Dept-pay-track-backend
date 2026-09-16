@@ -98,13 +98,28 @@ def payment_status_map(contribution):
     if qs is None:
         return {}
     rows = qs.values('student_id', 'status', 'updated_at')
-    return {
-        row['student_id']: {
+
+    # A student can have several attempts (a fresh attempt is allowed after a
+    # failed/abandoned one), so collapse them deliberately instead of letting
+    # row order decide: a `success` anywhere always wins, otherwise the newest
+    # attempt's status is shown. `paid_at` is that success row's timestamp.
+    # (Payment Meta.ordering is newest-first, so iteration is newest -> oldest.)
+    status_map = {}
+    for row in rows:
+        student_id = row['student_id']
+        entry = {
             'status': row['status'],
-            'paid_at': row['updated_at'] if row['status'] == STATUS_SUCCESS else None,
+            'paid_at': (
+                row['updated_at'] if row['status'] == STATUS_SUCCESS else None
+            ),
         }
-        for row in rows
-    }
+        existing = status_map.get(student_id)
+        if existing is None or (
+            existing['status'] != STATUS_SUCCESS
+            and entry['status'] == STATUS_SUCCESS
+        ):
+            status_map[student_id] = entry
+    return status_map
 
 
 def already_paid(contribution, student):
@@ -115,12 +130,14 @@ def already_paid(contribution, student):
     return qs.filter(student=student, status=STATUS_SUCCESS).exists()
 
 
-def mark_manually_paid(contribution, student, recorded_by):
+def mark_manually_paid(contribution, student, recorded_by, receipt_reference=''):
     """
     Bank a successful manual payment (offline cash/transfer) for a student.
 
     The amount ALWAYS comes from the contribution (server-side), never from the
-    client. Returns the created Payment. Raises ValueError if the payments app
+    client. `receipt_reference` (teller/receipt number quoted by the rep) is
+    the audit hook that makes manual marks reconcilable. Returns the created
+    Payment. Raises ValueError if the payments
     isn't linked yet (call it only once our additive migration is applied).
     """
     pm = payment_model()
@@ -141,5 +158,6 @@ def mark_manually_paid(contribution, student, recorded_by):
         status=STATUS_SUCCESS,
         method=METHOD_MANUAL,
         recorded_by=recorded_by,
+        receipt_reference=receipt_reference,
     )
     return created

@@ -1,6 +1,6 @@
 # TEST_REPORT.md — Agent 5 (QA) Contract Verification
-**Date:** 2026-09-11 (updated after owner-approved fixes) · **Suite:** 106 tests, all passing (`manage.py test` → OK)
-**Scope:** every endpoint in `API_CONTRACT.md` v2 — status codes + documented response shapes. Per `AGENTS.md`, mismatches were flagged; after owner review, M-1/M-2/M-3/M-5/M-6 were **fixed to match the contract** and their tests updated together; M-4 was resolved by owner decision (deferred to the Data/AI teammate with an integration doc).
+**Date:** 2026-09-16 (updated after the settlement/audit sprint) · **Suite:** 149 tests, all passing (`manage.py test` → OK)
+**Scope:** every endpoint in `API_CONTRACT.md` v2 — status codes + documented response shapes — plus the settlement, audit and roster flows added this sprint. Per `AGENTS.md`, mismatches were flagged; after owner review, M-1/M-2/M-3/M-5/M-6 were **fixed to match the contract** and their tests updated together; M-4 was resolved by owner decision (deferred to the Data/AI teammate, handover in `docs/ANALYTICS_INTEGRATION.md`).
 
 ## Per-endpoint verdicts
 
@@ -11,6 +11,13 @@
 | 1 | POST `/auth/logout/` | ✅ | 200 | (unspecified) | ✅ token invalidated after |
 | 1 | GET `/auth/me/` | ✅ | 200 | `{id, username, email, matric_number, department, level, role, phone_number}` | ✅ matches |
 | 1 | PATCH `/auth/me/` | ✅ | 200 | same shape; only `phone_number`/`level` editable | ✅ matches (`matric_number` correctly read-only) |
+| 1 | POST `/auth/import/` | ✅ | 201 | (unspecified) | ✅ `dry_run` + per-row errors; inert accounts (`set_unusable_password`) |
+| 1 | POST `/auth/claim/` | ✅ | 200/400 | (unspecified) | ✅ matric + first name + batch code; sets own password |
+| 1 | GET `/auth/claim-batches/` | ✅ | 200/403 | (unspecified) | ✅ admin only |
+| 1 | POST `/auth/claim-batches/{id}/deactivate/` | ✅ | 200/403 | (unspecified) | ✅ admin only; retired code stops working |
+| 1 | POST `/auth/reset-code/` | ✅ | 201/403 | (unspecified) | ✅ rep/admin only; single-use, expiring code |
+| 1 | POST `/auth/reset-password/` | ✅ | 200/400 | (unspecified) | ✅ replay, expiry and wrong-matric all rejected |
+| 1 | POST `/auth/users/{id}/set-role/` | ✅ | 200/400/403 | (unspecified) | ✅ admin only; never grants `admin`; no self-change |
 | 2 | GET `/departments/` | ✅ | 200 | (unspecified) | ✅ `{id, name, faculty}` locked |
 | 3 | GET `/contributions/` | ✅ | 200 | `{id, title, amount, deadline, is_mandatory, target_level, has_paid}` | ✅ matches; amount is a string |
 | 3 | POST `/contributions/` | ✅ | 201/403 | same shape | ✅ matches (students → 403 `{error, message}`) |
@@ -18,17 +25,17 @@
 | 3 | GET `/contributions/{id}/summary/` | ✅ | 200 | "expected vs collected" | ✅ `{total_expected, total_collected, outstanding_count}`, money as strings |
 | 3 | GET `/contributions/{id}/payments/` | ✅ | 200/403 | `[{student, matric_number, status, paid_at}]` | ✅ matches |
 | 3 | POST `/contributions/{id}/payments/` | ✅ | 201/409 | `{student, matric_number, status, paid_at, method}` | ✅ matches (`method: "manual"`, duplicate → `409 already_paid`) |
-| 4 | POST `/payments/initiate/` | ✅ | 200/409 | `{reference, checkout_url}` | ⚠️ **MISMATCH M-1** |
-| 4 | POST `/payments/webhook/` | ✅ | 200/400 | `{"received": true}` | ⚠️ **MISMATCH M-2** |
+| 4 | POST `/payments/initiate/` | ✅ | 200/409 | `{reference, checkout_url}` | ✅ matches (superset: keeps `message`, `payment`, legacy `authorization_url`) |
+| 4 | POST `/payments/webhook/` | ✅ | 200/400 | `{"received": true}` | ✅ matches on every return path |
 | 4 | GET `/payments/verify/{reference}/` | ✅ | 200 | (unspecified) | ✅ `{message, payment:{…}}` locked |
-| 4 | GET `/payments/history/` | ✅ | 200 | `[{id, contribution(title), amount, status, verified_at}]` | ⚠️ **MISMATCH M-3** |
+| 4 | GET `/payments/history/` | ✅ | 200 | `[{id, contribution(title), amount, status, verified_at}]` | ✅ matches |
 | 4 | GET `/payments/{id}/receipt/` | ✅ | 200/404 | (unspecified) | ✅ PaymentSerializer shape locked |
 | 5 | GET `/notifications/` | ✅ | 200 | (unspecified) | ✅ shape locked (see prior flag) |
 | 5 | POST `/notifications/{id}/read/` | ✅ | 200/404 | (unspecified) | ✅ idempotent; foreign rows → 404 (not 403) per §8 |
-| 6 | GET `/analytics/collection-stats/` | ❌ | — | `{total_expected, total_collected, outstanding_count}` | ❌ **NOT BUILT (M-4)** |
-| 6 | GET `/analytics/outstanding-students/?contribution_id=` | ❌ | — | list | ❌ **NOT BUILT (M-4)** |
+| 6 | GET `/analytics/collection-stats/` | ❌ | — | `{total_expected, total_collected, outstanding_count}` | ❌ **NOT BUILT** — deferred to the Data/AI teammate by owner decision (M-4) |
+| 6 | GET `/analytics/outstanding-students/?contribution_id=` | ❌ | — | list | ❌ **NOT BUILT** — deferred to the Data/AI teammate by owner decision (M-4) |
 
-## Mismatch resolutions (2026-09-11 — owner-approved fixes, all verified by tests)
+## Mismatch resolutions (2026-09-11/16 — owner-approved fixes, all verified by tests)
 
 - **M-1 — RESOLVED.** `/payments/initiate/` now returns the contract keys `reference` (top-level) and `checkout_url`, while keeping `message`, `payment`, and the legacy `authorization_url` for backward compatibility — a safe superset of the contract. Verified by `test_initiate_matches_contract_shape`.
 - **M-2 — RESOLVED.** Every webhook return path now responds exactly `{'received': True}` per §4. Verified by `test_webhook_matches_contract_shape`.

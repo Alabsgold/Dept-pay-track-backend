@@ -67,8 +67,15 @@ class Contribution(models.Model):
         return self.deadline is None or self.deadline >= timezone.now()
 
     def eligible_students(self):
-        """Students who "owe"/see this contribution (department + level)."""
-        qs = User.objects.filter(department=self.department)
+        """Users who owe/see this contribution (department + level + role).
+
+        Class reps ARE students and still pay dues; only admins/staff are
+        exempt (owner decision, 2026-09-16).
+        """
+        qs = User.objects.filter(
+            department=self.department,
+            role__in=[User.ROLE_STUDENT, User.ROLE_CLASS_REP],
+        )
         if self.target_level:
             qs = qs.filter(level=self.target_level)
         return qs

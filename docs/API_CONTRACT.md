@@ -18,6 +18,13 @@ Base URL (local dev): `http://localhost:8000/api/`
 | POST | `/auth/logout/` | Invalidate token |
 | GET | `/auth/me/` | Get current logged-in user's profile |
 | PATCH | `/auth/me/` | **NEW** — Update editable profile fields |
+| POST | `/auth/import/` | **NEW** — Admin: bulk-register students from a CSV roster (dry-run supported) |
+| POST | `/auth/claim/` | **NEW** — Imported student sets their first password |
+| GET | `/auth/claim-batches/` | **NEW** — Admin: list shared claim codes |
+| POST | `/auth/claim-batches/{id}/deactivate/` | **NEW** — Admin: retire a claim code |
+| POST | `/auth/reset-code/` | **NEW** — Rep/admin: issue a one-time password-reset code |
+| POST | `/auth/reset-password/` | **NEW** — Student sets a new password with that code |
+| POST | `/auth/users/{id}/set-role/` | **NEW** — Admin: promote a student to class rep |
 
 **POST /auth/register/**
 ```json
@@ -56,6 +63,95 @@ Frontend stores the token and sends it as `Authorization: Token <token>` on ever
 // Response  200 → same shape as GET /auth/me/
 ```
 `username`, `email`, and `matric_number` are NOT editable here — those need admin intervention if wrong (out of scope for now; flag to the team if this becomes a real need).
+
+### Roster import + account claiming (NEW)
+
+**Why this exists:** most students pay online (so they self-register), but a department
+wants the *complete* class roster on file — otherwise "who hasn't paid" only tracks people
+who bothered to sign up, and someone can escape dues simply by never registering.
+
+**POST /auth/import/** (admin only, `multipart/form-data`)
+```
+fields: file=<students.csv>   dry_run=true|false
+```
+CSV header — **only `first_name` and `matric_number` are required**. A department's records
+often don't include department/level/email, so those columns are optional and the student
+completes their profile later:
+```csv
+first_name,last_name,matric_number,level,department,email
+Chidi,Okafor,CSC/2021/045,400,Computer Science,
+```
+```json
+// Response  200
+{ "created": 180, "skipped_existing": 12, "errors_total": 8, "dry_run": false,
+  "errors": [ { "row": 14, "matric_number": "CSC/2021/014", "errors": ["invalid level: 600"] } ],
+  "claim_batch_code": "K7QM4X2P9R" }
+```
+- `dry_run=true` validates and reports **without writing anything** — run this first.
+- Re-uploading a corrected file is safe: existing matric numbers are reported under
+  `skipped_existing`, never duplicated.
+- Created accounts get **no password at all** — they physically cannot be logged into
+  until claimed. Nothing is distributed per student, which is what makes 2,000+ rows
+  manageable: the admin shares **one** `claim_batch_code` per class.
+
+**POST /auth/claim/** (public, throttled like login)
+```json
+// Request
+{ "matric_number": "CSC/2021/045", "first_name": "Chidi",
+  "batch_code": "K7QM4X2P9R", "password": "...", "email": "chidi@school.edu.ng" }
+
+// Response  200
+{ "message": "Account claimed successfully. You can now log in.", "username": "CSC/2021/045" }
+```
+`email` is optional here (imported rows may not have had one) — the student adds it.
+Username is derived from the matric number. **Every** failure before the password check
+returns the same generic `{ "error": "claim_failed" }`, so this endpoint can't be used to
+probe which matric numbers exist (§8).
+
+**GET /auth/claim-batches/** (admin only) → last 50 batches: `id`, `code`, `is_active`, `created_at`.
+**POST /auth/claim-batches/{id}/deactivate/** (admin only) — retire a code once the claim window closes.
+
+### Password reset — "Option A" (NEW, no email dependency)
+
+Deliberate choice: this student population has no reliable email, so a reset is
+**assisted but self-service at the password step**. A rep/admin hands over a one-time
+code in person; the student sets the new password themselves — the rep never sees it.
+
+**POST /auth/reset-code/** (class rep/admin)
+```json
+// Request
+{ "matric_number": "CSC/2021/045" }
+
+// Response  200
+{ "matric_number": "CSC/2021/045", "code": "4X2P9RK7", "expires_in_minutes": 30 }
+```
+Reps are scoped to their own department (admins reach anyone). Issuing a new code retires
+any previous live code for that student, so only one can ever work. Accounts that have not
+been claimed yet return `400` — those students use `/auth/claim/` instead.
+
+**POST /auth/reset-password/** (public, throttled like login)
+```json
+// Request
+{ "matric_number": "CSC/2021/045", "code": "4X2P9RK7", "new_password": "..." }
+
+// Response  200  { "message": "Password updated. You can now log in." }
+```
+Errors: `invalid_code` / `code_expired` / `weak_password`. Codes are **single-use** and
+expire after 30 minutes.
+
+### Rep promotion (NEW)
+
+**POST /auth/users/{id}/set-role/** (admin only)
+```json
+// Request
+{ "role": "class_rep" }        // or "student" to demote
+
+// Response  200  { "id": 12, "username": "jdoe", "role": "class_rep" }
+```
+**Reps are ordinary students until an admin ticks them.** Promotion grants the
+mark-paid-offline power, so it can never happen through self-service. This endpoint can
+only ever set `student`/`class_rep` (never `admin`), and an admin cannot change their own
+role.
 
 ---
 
@@ -120,15 +216,27 @@ a price.
 
 ```json
 // Request
-{ "matric_number": "CSC/2021/045" }
+{ "matric_number": "CSC/2021/045", "receipt_reference": "RCPT-8842" }
 
 // Response  201
 { "student": "Chidi Okafor", "matric_number": "CSC/2021/045", "status": "success",
   "paid_at": "2026-09-10T12:00:00Z", "method": "manual" }
 ```
 
-If the student already has a `success` payment (online or manual) for this contribution,
-returns `409 already_paid` — same rule as `/payments/initiate/`.
+**`receipt_reference` is required** (teller slip / receipt-book / transfer reference).
+It is the audit hook that makes an offline mark reconcilable: the Payment row stores both
+`receipt_reference` and `recorded_by` (who marked it), so a rep's marks can always be
+listed and checked against cash actually banked. Missing it → `400 bad_request`.
+
+The student is notified that the mark happened ("your rep recorded an offline payment of
+₦X — report it if this is wrong"), so students police their own records.
+
+Guards, all returning `400`/`403`/`409` before any write:
+- the student must be in the **same department** as the contribution, and in the
+  contribution's `target_level` when one is set (a bogus row would inflate collected totals);
+- a rep **cannot mark themselves** paid (only a real admin may);
+- if the student already has a `success` payment (online or manual) for this contribution,
+  returns `409 already_paid` — same rule as `/payments/initiate/`.
 
 ---
 
@@ -162,6 +270,27 @@ returns a `409 Conflict` instead of creating a new attempt:
 If a previous attempt exists but is `pending` or `failed`, initiating again is allowed —
 this creates a new attempt so a failed/abandoned payment doesn't block retrying.
 
+**Amount rule — the settlement gate (applies to BOTH the webhook and `/payments/verify/`)**
+The amount charged by the gateway must equal the contribution's amount **exactly**
+(compared in integer kobo; the amount is always taken server-side, never from the client).
+- exact match → `success`
+- **underpayment** → `failed` + `refund_status: pending_review`
+- **overpayment** → `failed` + `refund_status: pending_review`
+- gateway amount missing/unreadable → `failed` (never credit on trust)
+- a charge that would be a **duplicate** success for the same fee → `failed` +
+  `refund_status: pending_review` (the student was charged twice; someone must refund one)
+
+The student's notification states which way the amount was wrong, so they know what to do.
+
+**Refunds are NEVER automatic.** A mismatch sets `refund_status` to `pending_review` and
+a human reviews it in the Django admin (*Payments → filter by refund status*) before money
+moves. `paid_amount` records what the gateway actually took, so the review has the real
+figure. Transitions: `none` → `pending_review` → `refunded` / `rejected`. A webhook retry
+never overwrites an already-reviewed refund flag (that would risk a double refund).
+
+`/payments/initiate/` also rejects a fee whose `deadline` has already passed (`400`), so
+nobody starts a payment for something no longer due.
+
 **POST /payments/webhook/**  (called by the gateway, not the frontend)
 ```json
 // Incoming payload (Paystack shape, example)
@@ -169,8 +298,19 @@ this creates a new attempt so a failed/abandoned payment doesn't block retrying.
 
 // Response  200  { "received": true }
 ```
-Backend verifies the signature, matches `reference` to a `Payment` row, marks it `success`, logs the
-raw payload to `Transaction`, and fires a `Notification`. Invalid signature → `400`, no processing.
+Backend verifies the signature, matches `reference` to a `Payment` row **by exact reference
+string only** (never "latest pending payment for this student"), applies the amount rule
+above, and fires a `Notification`. Invalid signature → `400`, no processing. Malformed body
+(non-JSON, non-dict, or a `data` block that isn't an object) → `400`.
+
+**Idempotent by design:** a webhook for a payment that is already `success` returns
+`{"received": true}` and changes nothing, so Paystack's retries can never double-credit a
+student.
+
+> ⚠️ **Known gap (flagged, not hidden):** the `Transaction` model described in
+> `docs/BACKEND_DB_STRUCTURE.md` was never built, so the raw gateway payload is **not**
+> stored. Until it exists there is no raw-payload audit trail — only the `Payment` row.
+> See `directives/LAUNCH_PLAN.md`.
 
 **GET /payments/history/**
 ```json

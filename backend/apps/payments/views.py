@@ -2,9 +2,11 @@ import requests
 import hashlib
 import hmac
 import json
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -12,6 +14,61 @@ from rest_framework.views import APIView
 from apps.contributions.models import Contribution
 from .models import Payment
 from .serializers import PaymentSerializer
+
+
+def _as_kobo(value):
+    """Gateway money (kobo) as an exact int, or None when unusable."""
+    try:
+        return int(Decimal(str(value)))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _settle_gateway_charge(payment, paid_kobo):
+    """
+    Apply a gateway-reported charge to a Payment row (caller saves).
+
+    One rule, used by BOTH the webhook and the verify endpoint so they can
+    never disagree about the same charge:
+
+      * exactly the agreed fee            -> success
+      * more or less than the agreed fee  -> failed + refund review
+      * an amount we cannot verify        -> failed + refund review (fail closed)
+      * a fee this student already paid   -> failed + refund review (duplicate)
+
+    A mismatch means the gateway really took the student's money for a fee we
+    are not crediting, so it must never be silently absorbed: the row fails,
+    `paid_amount` records what was actually taken, and the excess is flagged
+    for a human to review before any refund is issued.
+
+    A flag is only ever set while it is still `none`, so a reviewer's decision
+    ('refunded'/'rejected') can never be overwritten by a later webhook retry.
+    """
+    expected_kobo = int(payment.amount * 100)
+    actual_kobo = _as_kobo(paid_kobo)
+
+    if actual_kobo is not None:
+        # Kobo -> naira is exact at 2dp, so nothing is lost recording it.
+        payment.paid_amount = (Decimal(actual_kobo) / 100).quantize(
+            Decimal('0.01')
+        )
+
+    already_credited = (
+        payment.contribution_id is not None
+        and Payment.objects.filter(
+            student_id=payment.student_id,
+            contribution_id=payment.contribution_id,
+            status=Payment.STATUS_SUCCESS,
+        ).exclude(pk=payment.pk).exists()
+    )
+
+    if already_credited or actual_kobo is None or actual_kobo != expected_kobo:
+        payment.status = Payment.STATUS_FAILED
+        if payment.refund_status == Payment.REFUND_NONE:
+            payment.refund_status = Payment.REFUND_PENDING_REVIEW
+        return
+
+    payment.status = Payment.STATUS_SUCCESS
 
 
 class PaymentListView(generics.ListAPIView):
@@ -45,10 +102,15 @@ class InitializePaymentView(APIView):
 
         # Scope the fee to THIS student's department + level, exactly like the
         # contributions list — a student may only pay fees that exist for them.
+        # That list also hides expired fees, so this must too: otherwise a
+        # student holding a stale id could still pay into a closed collection
+        # and we would be holding money for a fee nobody is accepting.
         user = request.user
         contribution = Contribution.objects.filter(
             id=contribution_id,
             department=user.department,
+        ).filter(
+            Q(deadline__isnull=True) | Q(deadline__gte=timezone.now())
         ).filter(
             Q(target_level__isnull=True) | Q(target_level=user.level)
         ).first()
@@ -204,11 +266,17 @@ class VerifyPaymentView(APIView):
         # payment exactly as it is. Paystack raises no `charge.failed` webhook
         # event, so treating "not success (yet)" as failure here was what
         # flipped payments to `failed` that were never actually declined.
-        if paystack_status in ('success', 'failed', 'reversed'):
-            payment.status = (
-                Payment.STATUS_SUCCESS if paystack_status == 'success'
-                else Payment.STATUS_FAILED
-            )
+        if paystack_status == 'success':
+            # Money moved — but this endpoint is also the student's own path
+            # back to the truth, so it applies the SAME amount rule as the
+            # webhook. Trusting the status alone would credit a fee the student
+            # never actually paid in full.
+            _settle_gateway_charge(payment, result['data'].get('amount'))
+            payment.save()
+        elif paystack_status in ('failed', 'reversed'):
+            # Declined, or the charge was reversed: no money is being kept, so
+            # there is nothing to refund — just record the outcome.
+            payment.status = Payment.STATUS_FAILED
             payment.save()
 
         return Response({
@@ -277,16 +345,10 @@ class PaystackWebhookView(APIView):
                 if payment.status == Payment.STATUS_SUCCESS:
                     return Response({'received': True})
 
-                # The paid amount MUST match the expected fee (in kobo).
-                # Otherwise a validly-signed webhook for the wrong amount
-                # would mark a payment as paid for less than it should be.
-                paid_kobo = transaction.get('amount')
-                if paid_kobo is None or int(paid_kobo) != int(payment.amount * 100):
-                    payment.status = Payment.STATUS_FAILED
-                    payment.save()
-                    return Response({'received': True})
-
-                payment.status = Payment.STATUS_SUCCESS
+                # The amount is checked inside the shared rule: exact fee ->
+                # success; anything else (over, under, unverifiable, or a fee
+                # already paid) -> failed + refund review.
+                _settle_gateway_charge(payment, transaction.get('amount'))
                 payment.save()
 
         return Response({'received': True})
