@@ -1,7 +1,7 @@
 # Departmental Payment/Contribution System — Backend
 
 **Team Visionary Coders** — NACOS National Build Challenge
-**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **152/152 tests passing**
+**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **156/156 tests passing**
 
 Django + DRF backend that lets departments create contributions (dues, event
 fees, shirts, excursions) and students pay through Paystack with automatic
@@ -233,6 +233,7 @@ we deliberately do not take.
 | Idempotency | An already-`success` payment is not re-credited on retries |
 | No re-failing | A webhook retry can never overwrite an existing refund flag |
 | Response | Always `{"received": true}` |
+| Proof | Every verified webhook is archived **verbatim** in `payments.Transaction` (first delivery per reference; retries not duplicated) — the evidence trail for refund disputes |
 | Robustness | Non-JSON body → `400`; missing `data` → `400`; missing `amount` → flagged review (never a 500) |
 | Timeout | `timeout=10` on every Paystack call, wrapped as `502 gateway_unavailable` |
 
@@ -359,12 +360,13 @@ reconciled in `API_CONTRACT.md` first, never patched silently.
 
 ```bash
 cd backend
-python manage.py test            # full suite — 152 tests
+python manage.py test            # full suite — 156 tests
 python manage.py check           # system check
 python manage.py makemigrations --check --dry-run   # model drift check
+python db_backup.py              # snapshot db.sqlite3 -> backups/ (downloadable)
 ```
 
-**152 tests**, split by concern:
+**156 tests**, split by concern:
 
 | App | Focus |
 |---|---|
@@ -402,17 +404,28 @@ Two resources exist so you can prove the whole system works end to end:
 
 ## Deployment (Render)
 
-| Step | Why it matters |
-|---|---|
-| Set `DATABASE_URL` (PostgreSQL) | SQLite on Render is wiped on redeploy — real money records must not live there |
-| Set `NUM_PROXIES=1` | Otherwise the `10/min` throttle sees Render's proxy IP and locks out **everyone** at once |
-| Set `ALLOWED_HOSTS` + `CORS_ALLOWED_ORIGINS` to the real frontend origin | Django rejects the requests otherwise |
-| Set a 50+ char random `SECRET_KEY` and `DEBUG=False` | Both required; HSTS / SSL redirect / secure cookies only engage when `DEBUG=False` |
-| Point the Paystack dashboard webhook at `https://<domain>/api/payments/webhook/` | The webhook is the **primary** settlement path |
-| Run `python manage.py migrate` on release | Applies the schema (4 migrations added this sprint) |
+The repo ships **`render.yaml`** — a one-click blueprint. In Render: *New + →
+Blueprint*, pick this repo, fill the two prompted values (`PAYSTACK_SECRET_KEY`,
+`CORS_ALLOWED_ORIGINS`), and it provisions the web service **plus managed
+PostgreSQL**, runs `collectstatic` + `migrate` (pre-deploy), and health-checks
+`GET /api/health/`.
 
-The production hardening (HSTS, SSL redirect, secure cookies, proxy count) is
-already coded — it only needs the real environment values.
+| What the blueprint handles | Why it matters |
+|---|---|
+| `DATABASE_URL` → PostgreSQL | SQLite on Render is wiped on redeploy — money records must not live there. **Locally SQLite stays the default**, and `python backend/db_backup.py` snapshots `db.sqlite3` any time |
+| `NUM_PROXIES=1` | The limiter reads the real client IP from `X-Forwarded-For`; without it every student shares Render's proxy IP and the `10/min` throttle locks out everyone at once |
+| `SECRET_KEY` generated + `DEBUG=False` | HSTS / SSL redirect / secure cookies engage when `DEBUG=False` (already coded) |
+| `ALLOWED_HOSTS=.onrender.com` | Django rejects unknown hosts |
+| `preDeployCommand: migrate` | Schema applies before the new version serves traffic |
+| `healthCheckPath: /api/health/` | Render restarts an unhealthy instance; also handy pre-demo |
+
+One manual step after the first deploy: point the Paystack dashboard webhook
+at `https://<your-domain>/api/payments/webhook/` — the webhook is the
+**primary** settlement path.
+
+**Free-tier demo note:** free Render services sleep after ~15 min idle and
+cold-start in ~50s. Ping `/api/health/` (or run a Starter plan) before the
+judges' demo so the wake-up doesn't eat your slot.
 
 ---
 
@@ -421,10 +434,10 @@ already coded — it only needs the real environment values.
 | Item | Status |
 |---|---|
 | §6 `/api/analytics/` endpoints | **Deliberately not built** — Data/AI teammate's deliverable; handover in `docs/ANALYTICS_INTEGRATION.md` |
-| `Transaction` model (raw webhook payload proof) | Specified in `AGENTS.md` / `BACKEND_DB_STRUCTURE.md` but never built — owner decision pending |
+| ~~`Transaction` model (raw webhook payload proof)~~ | **Built** (Sept 18 sprint): every verified webhook's raw payload is archived once per reference in `payments.Transaction`, visible read-only in Django admin |
 | Installment / partial payments | Not built. Settlement currently requires an **exact** amount, so installments need a per-fee "minimum amount" mode first |
 | Notifications response field `notification_type` | Shipped as-is; frontend to confirm the name |
-| Refund reconciliation report | The data already exists (`recorded_by`, `receipt_reference`); the report is not built |
+| Refund reconciliation report | The data already exists (`recorded_by`, `receipt_reference`, `Transaction` proofs); the report is not built |
 | Automatic refunds | **Deliberately never** — every refund is human-reviewed |
 | Email-based password reset | Replaced by assisted reset codes (no SMTP dependency); school email can be added post-hackathon |
 | Students completing their own profile | Students *can* `PATCH /auth/me/`; a "complete your profile" prompt is not built |

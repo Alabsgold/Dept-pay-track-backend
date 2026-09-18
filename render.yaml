@@ -1,0 +1,43 @@
+services:
+  # One web service. Render injects DATABASE_URL (postgres://...) and the app
+  # switches off SQLite automatically (see core/settings.py).
+  - type: web
+    name: dpt-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    # release runs before the new instance takes traffic; migrate is the only
+    # release-time step the schema needs.
+    startCommand: gunicorn core.wsgi:application --bind 0.0.0.0:$PORT --workers 2
+    preDeployCommand: python manage.py migrate
+    healthCheckPath: /api/health/
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12
+      - key: SECRET_KEY
+        generateValue: true          # 50+ random chars, managed by Render
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_HOSTS
+        value: ".onrender.com"
+      - key: NUM_PROXIES
+        value: "1"                   # behind Render's proxy — keeps throttling per-user
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dpt-postgres
+          property: connectionString
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false                  # set to the frontend origin in the dashboard
+      - key: PAYSTACK_SECRET_KEY
+        sync: false                  # set in the dashboard; also the webhook HMAC key
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+
+# The real database. Render's managed PostgreSQL — SQLite would be wiped on
+# every deploy, which is exactly what this block prevents.
+databases:
+  - name: dpt-postgres
+    databaseName: dpt
+    user: dpt
+    plan: basic-256mb                # cheapest tier; upgrade in the dashboard if needed

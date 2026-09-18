@@ -41,12 +41,13 @@ See `API_CONTRACT.md` for exact request/response shapes. Summary:
 
 | Area | Endpoints |
 |---|---|
-| Auth | register, login, logout, me |
+| Auth | register, login, logout, me, **roster import (CSV), account claim, claim batches, reset-code / reset-password, set-role** |
 | Departments | list |
-| Contributions | list, create, detail, summary |
-| Payments | initiate, webhook, verify, history, receipt |
+| Contributions | list, create, detail, summary, **roster (per-fee payments), manual mark-paid** |
+| Payments | initiate, webhook, verify, history, receipt, **unverified (admin refund-review queue)** |
 | Notifications | list, mark read |
-| Analytics | collection-stats, outstanding-students |
+| Analytics | collection-stats, outstanding-students **(deliberately NOT built — Data/AI teammate's deliverable, see `ANALYTICS_INTEGRATION.md`)** |
+| Ops | **health** (`GET /api/health/` — platform probe, no auth) |
 
 ## How other roles integrate with this backend
 - **Frontend:** consume the endpoints above with `Authorization: Token <token>`
@@ -55,23 +56,28 @@ See `API_CONTRACT.md` for exact request/response shapes. Summary:
   /payments/initiate/` → redirect student to the returned `checkout_url`.
   You don't need to touch backend code — just the Paystack dashboard/test
   keys and the frontend checkout UX.
-- **Data/AI teammate:** `GET /analytics/collection-stats/` and
-  `/analytics/outstanding-students/` give you everything needed for stats or
-  an AI assistant — query these, don't query the database directly.
+- **Data/AI teammate:** the §6 analytics endpoints are yours to build in your
+  own app — `docs/ANALYTICS_INTEGRATION.md` documents the sanctioned
+  read-model helpers, permission rules and response shapes. Don't query the
+  database directly.
 
 ## Progress status
-_(my report to the team check backend_progress)_
+Current as of the Sept 18 deployment-hardening sprint (full tour in the root
+[`README.md`](../README.md)):
 
 | Component | Status |
 |---|---|
-| Users & Auth | Completed (see `docs/BACKEND_PROGRESS.md`) |
-| Contributions | Up next |
-| Payments (initiate + webhook) | Up next |
-| Notifications | Up next |
-| Tests | 10/10 passing |
-| Deployed to Render | Not started |
+| Users & Auth (+ import/claim/reset/set-role) | Complete |
+| Contributions (+ payments bridge, audit rules) | Complete |
+| Payments (+ settlement rules, refund queue, race-proofing, webhook proof archive) | Complete |
+| Notifications | Complete |
+| Tests | 156/156 passing |
+| Deployment | `render.yaml` + PostgreSQL + health check ready — needs a real Render deploy + Paystack live webhook URL |
 
 ## Known constraints
 - No paid APIs — Paystack used in sandbox/test mode only
-- Webhooks tested locally via ngrok, switched to real URL before demo
+- Webhooks tested locally without ngrok (`backend/simulate_webhook.py`); on
+  deploy point the Paystack dashboard at the real `/api/payments/webhook/`
+- Free-tier Render sleeps after ~15 min idle — ping `/api/health/` before a
+  live demo so the cold start doesn't eat the slot
 - See `SECURITY_AUDIT.md & BACKEND_PROGRESS.md` for issues encountered and how they were resolved

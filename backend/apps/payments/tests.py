@@ -13,7 +13,7 @@ from rest_framework.authtoken.models import Token
 
 from apps.contributions.models import Contribution
 from apps.users.models import Department
-from .models import Payment
+from .models import Payment, Transaction
 
 
 User = get_user_model()
@@ -629,3 +629,60 @@ class PaymentTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['count'], 0)
         self.assertEqual(response.data['results'], [])
+
+    # --- deployment hardening: race-proof settlement, webhook proof, health ---
+
+    def test_concurrent_webhook_and_verify_cannot_double_credit(self):
+        # The race: a webhook delivery and a student hitting verify both apply
+        # a valid charge for the same fee, and the second one to save would
+        # previously double-credit. With the DB constraint the loser lands in
+        # refund review — the money is queued for a human, never counted twice.
+        payment_a = self._fee_payment('REF-RACE-A')
+        payment_b = self._fee_payment('REF-RACE-B')
+
+        self._webhook('REF-RACE-A', 350000)
+
+        with patch('apps.payments.views.requests.get') as mock_get:
+            mock_get.return_value.json.return_value = {
+                'status': True,
+                'data': {'status': 'success', 'amount': 350000},
+            }
+            self.client.get('/api/payments/verify/REF-RACE-B/')
+
+        payment_a.refresh_from_db()
+        payment_b.refresh_from_db()
+        credited = [p for p in (payment_a, payment_b) if p.status == Payment.STATUS_SUCCESS]
+        flagged = [p for p in (payment_a, payment_b) if p.refund_status == Payment.REFUND_PENDING_REVIEW]
+        self.assertEqual(len(credited), 1, 'two payments credited for one fee — double-count!')
+        self.assertEqual(len(flagged), 1)
+        # Collected totals must reflect ONE payment, not two.
+        self.assertEqual(self.contribution.total_collected(), Decimal('3500.00'))
+
+    def test_webhook_persists_the_raw_gateway_payload(self):
+        # Audit proof: what Paystack said must be on file verbatim, once per
+        # reference even across retries, for refund disputes.
+        self.assertEqual(Transaction.objects.count(), 0)
+        self._webhook('REF-PROOF-001', 350000)
+        self._webhook('REF-PROOF-001', 350000)  # retry
+
+        self.assertEqual(Transaction.objects.count(), 1)
+        proof = Transaction.objects.get(reference='REF-PROOF-001')
+        self.assertEqual(proof.raw_payload['event'], 'charge.success')
+        self.assertEqual(proof.raw_payload['data']['amount'], 350000)
+
+    def test_webhook_keeps_proof_even_for_an_unknown_reference(self):
+        self._webhook('REF-UNKNOWN-999', 350000)
+
+        proof = Transaction.objects.filter(reference='REF-UNKNOWN-999').first()
+        self.assertIsNotNone(proof)
+        self.assertIsNone(proof.payment)  # no matching Payment row — still kept
+
+    def test_health_endpoint_reports_database_status(self):
+        from django.db import connection
+
+        self.client.credentials()
+        response = self.client.get('/api/health/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'ok')
+        self.assertEqual(response.json()['database'], 'up')
+        self.assertTrue(connection.is_usable())

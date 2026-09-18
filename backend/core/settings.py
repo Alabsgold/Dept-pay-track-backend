@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 import sys
 
 from decouple import config, Csv
@@ -68,6 +69,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # Serves STATIC_ROOT (incl. Django admin assets) without a separate server.
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -99,13 +102,37 @@ WSGI_APPLICATION = 'core.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+#
+# Local dev (and the demo) keep the plain SQLite file: with no DATABASE_URL env
+# var the app uses db.sqlite3 — easy to inspect, back up and download. A
+# production platform (Render) sets DATABASE_URL, e.g.
+# postgres://user:pass@host:5432/dbname, and this same file switches to
+# PostgreSQL. Parsed with the stdlib; only the psycopg2 driver is extra.
+database_url = config('DATABASE_URL', default='')
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+if database_url.startswith('postgres'):
+    # Hosted PostgreSQL (Render sets DATABASE_URL to postgres://...).
+    db_parts = urlparse(database_url)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': db_parts.path.lstrip('/'),
+            'USER': unquote(db_parts.username or ''),
+            'PASSWORD': unquote(db_parts.password or ''),
+            'HOST': db_parts.hostname or '',
+            'PORT': db_parts.port or 5432,
+            'CONN_MAX_AGE': 60,  # reuse connections; hosted Postgres dislikes connection storms
+        }
     }
-}
+else:
+    # SQLite file — the local dev/demo default (db.sqlite3 in backend/), also
+    # chosen when DATABASE_URL points at sqlite:// or is unset.
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -149,6 +176,9 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+# collectstatic target for production (Django admin CSS/JS), served by
+# whitenoise. Local runserver keeps serving straight from the apps.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -166,6 +196,12 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'auth': '10/min',
     },
+    # DRF throttle identity. Unset/0 -> REMOTE_ADDR (correct for local dev,
+    # which has no proxy). Behind Render's reverse proxy set NUM_PROXIES=1 so
+    # the limiter reads the real client IP from X-Forwarded-For — otherwise
+    # every student shares the proxy IP and the 10/min auth throttle locks the
+    # whole school out at once.
+    'NUM_PROXIES': int(config('NUM_PROXIES', default=0)),
 }
 
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000', cast=Csv())
@@ -177,4 +213,27 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+# Logging: one console stream (the platform aggregates stdout). Root logger so
+# every app — notably the Paystack webhook — leaves a forensic trail.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '{asctime} {levelname} {name} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'standard',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+}
 

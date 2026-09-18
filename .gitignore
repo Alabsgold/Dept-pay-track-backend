@@ -31,3 +31,4 @@ ENV/
 
 # Backend Max diagnostic data
 .backend-doctor/
+backend/backups/

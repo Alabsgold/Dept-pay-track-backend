@@ -4,3 +4,8 @@ djangorestframework==3.18.1
 python-decouple==3.8
 requests==2.34.2
 django-cors-headers==4.6.0
+# Production runtime (Render): WSGI server, static serving, PostgreSQL driver.
+# Not used in local dev — SQLite stays the default there.
+gunicorn==26.2.0
+whitenoise==6.12.0
+psycopg2-binary==2.9.13

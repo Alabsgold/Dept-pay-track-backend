@@ -2,9 +2,11 @@ import requests
 import hashlib
 import hmac
 import json
+import logging
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
+from django.db import IntegrityError
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import generics, permissions
@@ -12,10 +14,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.contributions.models import Contribution
-from .models import Payment
+from .models import Payment, Transaction
 from .serializers import PaymentSerializer
 from .permissions import IsAdminUser
 from .serializers import UnverifiedPaymentSerializer
+
+logger = logging.getLogger(__name__)
 
 
 def _as_kobo(value):
@@ -71,6 +75,25 @@ def _settle_gateway_charge(payment, paid_kobo):
         return
 
     payment.status = Payment.STATUS_SUCCESS
+
+
+def _save_settled(payment):
+    """
+    Persist a settled charge.
+
+    If we LOSE the concurrent race — the DB's unique_success_per_student_fee
+    constraint fires because another charge for this fee was credited a moment
+    ago — the money was still taken, so the row fails into refund review
+    instead of double-crediting. The student is never charged twice in our
+    books, and the duplicate is queued for a human, not silently absorbed.
+    """
+    try:
+        payment.save()
+    except IntegrityError:
+        payment.status = Payment.STATUS_FAILED
+        if payment.refund_status == Payment.REFUND_NONE:
+            payment.refund_status = Payment.REFUND_PENDING_REVIEW
+        payment.save()
 
 
 class PaymentListView(generics.ListAPIView):
@@ -274,7 +297,7 @@ class VerifyPaymentView(APIView):
             # webhook. Trusting the status alone would credit a fee the student
             # never actually paid in full.
             _settle_gateway_charge(payment, result['data'].get('amount'))
-            payment.save()
+            _save_settled(payment)
         elif paystack_status in ('failed', 'reversed'):
             # Declined, or the charge was reversed: no money is being kept, so
             # there is nothing to refund — just record the outcome.
@@ -342,6 +365,20 @@ class PaystackWebhookView(APIView):
                 reference=reference
             ).first()
 
+            # Audit proof: store exactly what the gateway said. FIRST delivery
+            # wins — Paystack's identical retries are not duplicated — and
+            # events for references we don't recognise are still kept
+            # (payment=None) for forensics.
+            if reference:
+                Transaction.objects.get_or_create(
+                    reference=reference,
+                    defaults={'payment': payment, 'raw_payload': data},
+                )
+            logger.info(
+                'paystack webhook event=%s reference=%s payment_found=%s',
+                data.get('event'), reference, payment is not None,
+            )
+
             if payment:
                 # Idempotency: a retried webhook must not re-process/overwrite.
                 if payment.status == Payment.STATUS_SUCCESS:
@@ -351,7 +388,11 @@ class PaystackWebhookView(APIView):
                 # success; anything else (over, under, unverifiable, or a fee
                 # already paid) -> failed + refund review.
                 _settle_gateway_charge(payment, transaction.get('amount'))
-                payment.save()
+                _save_settled(payment)
+                logger.info(
+                    'payment %s settled status=%s refund_status=%s',
+                    payment.reference, payment.status, payment.refund_status,
+                )
 
         return Response({'received': True})
 

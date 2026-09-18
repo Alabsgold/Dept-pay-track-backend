@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 
 class Payment(models.Model):
@@ -139,6 +140,54 @@ class Payment(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            # The race-proof: at most ONE credited payment per student per fee.
+            # Two concurrent webhooks (e.g. a retry racing the first delivery,
+            # or a second reference for the same fee) both pass the app-level
+            # `already_credited` check-then-save; this partial unique index is
+            # the DB-level backstop that makes double-crediting impossible.
+            models.UniqueConstraint(
+                fields=['student', 'contribution'],
+                # 'success' == Payment.STATUS_SUCCESS (Meta cannot reference
+                # the enclosing class's names).
+                condition=Q(status='success'),
+                name='unique_success_per_student_fee',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.student} - {self.payment_type} - {self.status}"
+
+
+class Transaction(models.Model):
+    """
+    Proof record for one verified Paystack webhook (charge.success).
+
+    The repo's own spec (AGENTS.md / BACKEND_DB_STRUCTURE.md) calls for a raw
+    payload audit trail — if a refund is ever disputed, this is the evidence
+    of exactly what the gateway said, when. The FIRST delivery for a reference
+    is stored (get_or_create semantics in the webhook); Paystack's identical
+    retries are not duplicated. `payment` is nullable: an event for a
+    reference we don't recognise is still worth keeping on file.
+    """
+
+    payment = models.ForeignKey(
+        Payment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='transactions',
+    )
+
+    reference = models.CharField(max_length=100, db_index=True)
+
+    # Exactly what Paystack POSTed (verified signature), untouched.
+    raw_payload = models.JSONField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.reference} ({self.created_at:%Y-%m-%d %H:%M} UTC)"

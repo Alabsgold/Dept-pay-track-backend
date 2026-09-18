@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Payment
+from .models import Payment, Transaction
 
 
 @admin.register(Payment)
@@ -29,3 +29,22 @@ class PaymentAdmin(admin.ModelAdmin):
     search_fields = ('reference', 'student__username', 'student__matric_number')
     readonly_fields = ('created_at', 'updated_at')
     date_hierarchy = 'created_at'
+
+
+@admin.register(Transaction)
+class TransactionAdmin(admin.ModelAdmin):
+    """
+    The raw webhook proof archive (read-only in the admin): what Paystack
+    actually said, per reference — the evidence trail behind any refund.
+    """
+
+    list_display = ('reference', 'payment', 'created_at')
+    search_fields = ('reference',)
+    readonly_fields = ('payment', 'reference', 'raw_payload', 'created_at')
+    date_hierarchy = 'created_at'
+
+    def has_add_permission(self, request):
+        return False  # rows are written by the webhook, never by hand
+
+    def has_change_permission(self, request, obj=None):
+        return False  # proof records must not be edited
