@@ -14,6 +14,8 @@ from rest_framework.views import APIView
 from apps.contributions.models import Contribution
 from .models import Payment
 from .serializers import PaymentSerializer
+from .permissions import IsAdminUser
+from .serializers import UnverifiedPaymentSerializer
 
 
 def _as_kobo(value):
@@ -352,3 +354,28 @@ class PaystackWebhookView(APIView):
                 payment.save()
 
         return Response({'received': True})
+
+
+class UnverifiedPaymentsView(APIView):
+    """
+    GET /api/payments/unverified/ — admin-only refund-review queue.
+
+    Lists every payment flagged `pending_review`: the gateway took the
+    student's money for a fee we could not credit (wrong amount, duplicate
+    charge, or an amount we could not verify), so a human must decide a
+    refund. Strictly read-only — approving or refusing a refund happens in
+    the Django admin; this endpoint never mutates anything.
+    """
+
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        flagged = Payment.objects.filter(
+            refund_status=Payment.REFUND_PENDING_REVIEW
+        ).order_by('-created_at')
+
+        serializer = UnverifiedPaymentSerializer(flagged, many=True)
+        return Response({
+            'count': flagged.count(),
+            'results': serializer.data,
+        })

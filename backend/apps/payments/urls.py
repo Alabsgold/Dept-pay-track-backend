@@ -6,6 +6,7 @@ from .views import (
     VerifyPaymentView,
     PaymentDetailView,
     PaystackWebhookView,
+    UnverifiedPaymentsView,
 )
 
 
@@ -15,4 +16,5 @@ urlpatterns = [
     path('verify/<str:reference>/', VerifyPaymentView.as_view(), name='payment-verify'),
     path('<int:pk>/receipt/', PaymentDetailView.as_view(), name='payment-receipt'),
     path('webhook/', PaystackWebhookView.as_view(), name='paystack-webhook'),
+    path('unverified/', UnverifiedPaymentsView.as_view(), name='payment-unverified'),
 ]

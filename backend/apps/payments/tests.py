@@ -575,3 +575,57 @@ class PaymentTests(APITestCase):
     def _get_secret_key(self):
         from django.conf import settings
         return settings.PAYSTACK_SECRET_KEY.encode()
+
+    # --- unverified (admin refund-review queue; read-only, additive) ---
+
+    def _flagged_payment(self, reference, received_kobo):
+        """A failed, refund-flagged row as the settlement rule would leave it."""
+        payment = Payment.objects.create(
+            student=self.user,
+            contribution=self.contribution,
+            payment_type=Payment.PAYMENT_CONTRIBUTION,
+            amount=Decimal('3500.00'),
+            reference=reference,
+            status=Payment.STATUS_FAILED,
+            paid_amount=(Decimal(received_kobo) / 100),
+        )
+        payment.refund_status = Payment.REFUND_PENDING_REVIEW
+        payment.save(update_fields=['refund_status'])
+        return payment
+
+    def test_admin_sees_unverified_payments(self):
+        self._flagged_payment('REF-FLAG-001', 400000)  # overpaid: 4000 vs 3500
+
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=self.admin).key}'
+        )
+        response = self.client.get('/api/payments/unverified/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        row = response.data['results'][0]
+        self.assertEqual(row['reference'], 'REF-FLAG-001')
+        self.assertEqual(row['student_matric'], 'TEST/2026/001')
+        self.assertEqual(row['contribution_title'], 'Departmental Shirt 2026')
+        self.assertEqual(row['expected_amount'], '3500.00')
+        self.assertEqual(row['amount_received'], '4000.00')
+        self.assertEqual(row['refund_status'], Payment.REFUND_PENDING_REVIEW)
+        # Mismatch wording: direction + both amounts + the difference.
+        self.assertIn('overpaid', row['mismatch_detail'])
+        self.assertIn('4,000.00', row['mismatch_detail'])
+        self.assertIn('3,500.00', row['mismatch_detail'])
+        self.assertIn('500.00', row['mismatch_detail'])
+
+    def test_student_cannot_see_unverified_payments(self):
+        response = self.client.get('/api/payments/unverified/')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unverified_empty_when_all_verified(self):
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f'Token {Token.objects.create(user=self.admin).key}'
+        )
+        response = self.client.get('/api/payments/unverified/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 0)
+        self.assertEqual(response.data['results'], [])
