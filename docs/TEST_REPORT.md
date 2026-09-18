@@ -1,5 +1,5 @@
 # TEST_REPORT.md — Agent 5 (QA) Contract Verification
-**Date:** 2026-09-16 (updated after the settlement/audit sprint) · **Suite:** 149 tests, all passing (`manage.py test` → OK)
+**Date:** 2026-09-16 (updated after the settlement/audit sprint) · **Suite:** 152 tests, all passing (`manage.py test` → OK)
 **Scope:** every endpoint in `API_CONTRACT.md` v2 — status codes + documented response shapes — plus the settlement, audit and roster flows added this sprint. Per `AGENTS.md`, mismatches were flagged; after owner review, M-1/M-2/M-3/M-5/M-6 were **fixed to match the contract** and their tests updated together; M-4 was resolved by owner decision (deferred to the Data/AI teammate, handover in `docs/ANALYTICS_INTEGRATION.md`).
 
 ## Per-endpoint verdicts

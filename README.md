@@ -1,7 +1,7 @@
 # Departmental Payment/Contribution System — Backend
 
 **Team Visionary Coders** — NACOS National Build Challenge
-**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **149/149 tests passing**
+**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **152/152 tests passing**
 
 Django + DRF backend that lets departments create contributions (dues, event
 fees, shirts, excursions) and students pay through Paystack with automatic
@@ -179,6 +179,7 @@ Full request/response shapes: [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md).
 | `GET` | `/verify/{reference}/` | student | Re-check the gateway and settle the payment |
 | `GET` | `/{id}/receipt/` | owner | Receipt for one payment |
 | `POST` | `/webhook/` | Paystack | HMAC-signed gateway callback (idempotent) |
+| `GET` | `/unverified/` | admin | **Refund-review queue**: payments flagged `pending_review` (wrong amount, duplicate charge, unverifiable). Read-only — approving/refusing a refund happens in the Django admin |
 
 ### Notifications (`/api/notifications/`)
 | Method | Path | Who | Purpose |
@@ -217,8 +218,11 @@ student taps Pay
 ⚠️ **Overpayment is deliberately *not* auto-accepted.** The logic is
 that any mismatch (more *or* less) fails, flags a refund for **human review**,
 and tells the student which way they were off. **Refunds are never issued
-automatically** — an admin reviews and marks `refunded`/`rejected`. Automatic
-refunds are a legal/financial risk we deliberately do not take.
+automatically** — an admin reviews and marks `refunded`/`rejected` (in the
+Django admin). The admin's worklist is `GET /api/payments/unverified/`, a
+read-only queue of every `pending_review` payment showing what was received
+vs. expected and the difference. Automatic refunds are a legal/financial risk
+we deliberately do not take.
 
 ### Webhook safety
 
@@ -355,18 +359,18 @@ reconciled in `API_CONTRACT.md` first, never patched silently.
 
 ```bash
 cd backend
-python manage.py test            # full suite — 149 tests
+python manage.py test            # full suite — 152 tests
 python manage.py check           # system check
 python manage.py makemigrations --check --dry-run   # model drift check
 ```
 
-**149 tests**, split by concern:
+**152 tests**, split by concern:
 
 | App | Focus |
 |---|---|
 | `users` | auth, roles, permissions, throttling, contract shapes, import/claim/reset/set-role |
 | `contributions` | CRUD, visibility scoping, summary maths, mark-paid audit rules |
-| `payments` | initiate/webhook/verify/receipt, kobo maths, **every settlement rule**, idempotency |
+| `payments` | initiate/webhook/verify/receipt, kobo maths, **every settlement rule**, idempotency, admin refund-review queue |
 | `notifications` | list/mark-read ownership, transition-only triggers, no duplicates |
 
 Test types:
