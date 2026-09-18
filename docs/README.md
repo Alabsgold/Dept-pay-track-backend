@@ -1,6 +1,6 @@
 # Backend — Departmental Payment/Contribution System
 Team Visionary Coders — NACOS National Build Challenge
-Backend owner: Emmanuel
+Backend: Emmanuel
 
 ## What this is
 Backend for a system that lets departments create contributions (dues, event

@@ -1,7 +1,7 @@
 # Departmental Payment/Contribution System — Backend
 
 **Team Visionary Coders** — NACOS National Build Challenge
-**Branch:** `backend-dev` · **Status:** all 5 build agents complete · **149/149 tests passing**
+**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **149/149 tests passing**
 
 Django + DRF backend that lets departments create contributions (dues, event
 fees, shirts, excursions) and students pay through Paystack with automatic
@@ -214,7 +214,7 @@ student taps Pay
 | Student already has a `success` for this fee (**duplicate charge**) | Failed + refund review — they were double-charged and must be refunded |
 | Gateway says `abandoned`/`pending`/`ongoing`/`processing` | Row left untouched (still `pending`; the student may retry) |
 
-⚠️ **Overpayment is deliberately *not* auto-accepted.** The owner's decision is
+⚠️ **Overpayment is deliberately *not* auto-accepted.** The logic is
 that any mismatch (more *or* less) fails, flags a refund for **human review**,
 and tells the student which way they were off. **Refunds are never issued
 automatically** — an admin reviews and marks `refunded`/`rejected`. Automatic
@@ -334,7 +334,7 @@ never by the client (there is deliberately **no create endpoint**):
 
 ## Analytics handover (Data/AI teammate)
 
-`/api/analytics/` is intentionally **not built** by the backend agent — it is the
+`/api/analytics/` is intentionally **not built** by the backend (Emmanuel) — it is the
 Data/AI teammate's deliverable. To keep their work clean *and* protect this code:
 
 - Read-model helpers already exist and are the sanctioned data source:
@@ -440,3 +440,5 @@ already coded — it only needs the real environment values.
 - `backend/core/` — settings, URL config, exception handler
 - `backend/apps/` — one Django app per concern (users, contributions, payments, notifications)
 - `docs/` — API contract, DB structure, security audit report
+
+**written by** `alabiemmanuel`
