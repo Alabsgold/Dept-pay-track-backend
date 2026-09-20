@@ -50,6 +50,11 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'role']
 
+    def validate_username(self, value):
+        if '@' in value:
+            raise serializers.ValidationError("Username cannot contain '@'.")
+        return value
+
     def validate_password(self, value):
         # Enforce Django's built-in validators (length, common passwords, etc.)
         validate_password(value)
@@ -101,18 +106,33 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    username = serializers.CharField(required=True)
+    username = serializers.CharField(required=False)
+    email = serializers.EmailField(required=False)
+    matric_number = serializers.CharField(required=False)
     password = serializers.CharField(required=True, write_only=True)
 
     def validate(self, attrs):
-        username = attrs.get('username')
         password = attrs.get('password')
+        email = attrs.get('email')
+        matric_number = attrs.get('matric_number')
+        username = attrs.get('username')
 
-        user = authenticate(username=username, password=password)
-        if not user:
+        if email:
+            user = User.objects.filter(email__iexact=email).first()
+        elif matric_number:
+            user = User.objects.filter(
+                matric_number__iexact=matric_number
+            ).first()
+        else:
+            # Username lookup intentionally remains case-sensitive. Alternate
+            # identifiers get their own case-insensitive resolution above.
+            user = authenticate(username=username, password=password)
+
+        if email or matric_number:
+            if user is None or not user.check_password(password):
+                user = None
+        if not user or not user.is_active:
             raise serializers.ValidationError("Invalid username or password.")
-        if not user.is_active:
-            raise serializers.ValidationError("User account is disabled.")
 
         attrs['user'] = user
         return attrs
@@ -120,6 +140,7 @@ class LoginSerializer(serializers.Serializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     department = serializers.CharField(source='department.name', read_only=True)
+    full_name = serializers.SerializerMethodField(read_only=True)
     # Imported rosters may have no department on file, so the student must be
     # able to supply it. It can be filled in ONCE, then it is locked: letting
     # a student change department freely would also let them switch out of a
@@ -140,6 +161,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'matric_number',
             'department_id',
             'department',
+            'full_name',
             'level',
             'role',
             'phone_number',
@@ -150,8 +172,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'email',
             'matric_number',
             'department',
+            'full_name',
             'role',
         ]
+
+    def get_full_name(self, obj):
+        name_parts = [
+            part.strip()
+            for part in (obj.first_name, obj.last_name)
+            if part and part.strip()
+        ]
+        return ' '.join(name_parts) or obj.username
 
     def validate_level(self, value):
         # ChoiceField already rejects invalid choices; this also rejects blank

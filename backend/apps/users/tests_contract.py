@@ -122,7 +122,7 @@ class AuthContractTests(APITestCase):
         self.assertEqual(
             set(response.data.keys()),
             {'id', 'username', 'email', 'matric_number', 'department',
-             'level', 'role', 'phone_number'},
+             'level', 'role', 'phone_number', 'full_name'},
         )
         self.assertEqual(response.data['department'], 'Computer Science')
 
