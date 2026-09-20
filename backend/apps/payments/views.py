@@ -244,8 +244,11 @@ class VerifyPaymentView(APIView):
         ).first()
 
         if not payment:
+            # Contract §7: every error carries a machine code plus a message —
+            # the frontend has exactly ONE error handler and reads
+            # `payload.message`, so a bare sentence here would render blank.
             return Response(
-                {'error': 'Payment not found.'},
+                {'error': 'not_found', 'message': 'Payment not found.'},
                 status=404
             )
 
@@ -328,8 +331,9 @@ class PaystackWebhookView(APIView):
         signature = request.headers.get('x-paystack-signature')
 
         if not signature:
+            # Gateway-facing, but §7's shape is uniform across every endpoint.
             return Response(
-                {'error': 'Missing signature.'},
+                {'error': 'bad_request', 'message': 'Missing signature.'},
                 status=400
             )
 
@@ -341,7 +345,7 @@ class PaystackWebhookView(APIView):
 
         if not hmac.compare_digest(signature, expected_signature):
             return Response(
-                {'error': 'Invalid signature.'},
+                {'error': 'bad_request', 'message': 'Invalid signature.'},
                 # Contract §7: invalid webhook signature → 400, not 401.
                 status=400
             )
@@ -350,13 +354,13 @@ class PaystackWebhookView(APIView):
             data = json.loads(payload)
         except (ValueError, TypeError):
             return Response(
-                {'error': 'Invalid payload.'},
+                {'error': 'bad_request', 'message': 'Invalid payload.'},
                 status=400
             )
 
         if not isinstance(data, dict):
             return Response(
-                {'error': 'Invalid payload.'},
+                {'error': 'bad_request', 'message': 'Invalid payload.'},
                 status=400
             )
 
