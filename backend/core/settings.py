@@ -108,13 +108,12 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # production platform (Render) sets DATABASE_URL, e.g.
 # postgres://user:pass@host:5432/dbname, and this same file switches to
 # PostgreSQL. Parsed with the stdlib; only the psycopg2 driver is extra.
-database_url = config('DATABASE_URL', default='')
-
-if database_url.startswith('postgres'):
-    # Hosted PostgreSQL (Render sets DATABASE_URL to postgres://...).
-    db_parts = urlparse(database_url)
-    DATABASES = {
-        'default': {
+def _database_settings(database_url):
+    """Translate DATABASE_URL into Django's DATABASES.default mapping."""
+    if database_url.startswith('postgres'):
+        # Hosted PostgreSQL (Render sets DATABASE_URL to postgres://...).
+        db_parts = urlparse(database_url)
+        return {
             'ENGINE': 'django.db.backends.postgresql',
             'NAME': db_parts.path.lstrip('/'),
             'USER': unquote(db_parts.username or ''),
@@ -123,16 +122,20 @@ if database_url.startswith('postgres'):
             'PORT': db_parts.port or 5432,
             'CONN_MAX_AGE': 60,  # reuse connections; hosted Postgres dislikes connection storms
         }
-    }
-else:
+
     # SQLite file — the local dev/demo default (db.sqlite3 in backend/), also
     # chosen when DATABASE_URL points at sqlite:// or is unset.
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
+    return {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
+
+
+database_url = config('DATABASE_URL', default='')
+
+DATABASES = {
+    'default': _database_settings(database_url),
+}
 
 
 # Password validation
