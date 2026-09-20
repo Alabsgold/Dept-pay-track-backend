@@ -51,7 +51,10 @@ See `API_CONTRACT.md` for exact request/response shapes. Summary:
 
 ## How other roles integrate with this backend
 - **Frontend:** consume the endpoints above with `Authorization: Token <token>`
-  header (except register/login/webhook). See `API_CONTRACT.md` for shapes.
+  header (except register/login/claim/reset-password/departments/webhook). See
+  [`API_CONTRACT.md`](./API_CONTRACT.md) for shapes and
+  [`FRONTEND_LINKING.md`](./FRONTEND_LINKING.md) for the screen-by-screen wiring
+  map, the error-code table and the integration checklist.
 - **Payments teammate:** the checkout redirect flow is `POST
   /payments/initiate/` → redirect student to the returned `checkout_url`.
   You don't need to touch backend code — just the Paystack dashboard/test
@@ -71,7 +74,7 @@ Current as of the Sept 18 deployment-hardening sprint (full tour in the root
 | Contributions (+ payments bridge, audit rules) | Complete |
 | Payments (+ settlement rules, refund queue, race-proofing, webhook proof archive) | Complete |
 | Notifications | Complete |
-| Tests | 156/156 passing |
+| Tests | 200/200 passing |
 | Deployment | `render.yaml` + PostgreSQL + health check ready — needs a real Render deploy + Paystack live webhook URL |
 
 ## Known constraints

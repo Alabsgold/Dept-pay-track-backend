@@ -325,8 +325,14 @@ moves. `paid_amount` records what the gateway actually took, so the review has t
 figure. Transitions: `none` → `pending_review` → `refunded` / `rejected`. A webhook retry
 never overwrites an already-reviewed refund flag (that would risk a double refund).
 
-`/payments/initiate/` also rejects a fee whose `deadline` has already passed (`400`), so
-nobody starts a payment for something no longer due.
+`/payments/initiate/` also refuses a fee whose `deadline` has already passed. It answers
+`404 not_found` — **not** `400` — because an expired fee is *invisible* to students
+(the contributions list hides it too), so a stale id can't reveal that the fee
+exists or start a payment for a collection nobody is accepting:
+```json
+// Response  404
+{ "error": "not_found", "message": "Contribution not found or not available to you." }
+```
 
 **Gateway failure handling (v2.1):**
 Request timeouts, non-JSON responses, and unsuccessful or incomplete gateway
@@ -339,6 +345,22 @@ These responses never expose raw gateway payloads or provider exception details.
 Logs record only safe operation/status metadata (and the payment reference on
 webhook settlement); secrets, authorization headers, and raw payloads are never
 logged. Raw webhook payloads remain archived in `payments.Transaction` for audit.
+
+**GET /payments/verify/{reference}/**
+The student's own "refresh status" call for a payment *they* started — it never
+returns another student's row.
+```json
+// Response  200  (status is re-checked against the gateway)
+{ "message": "Payment verification completed.", "payment": { "…": "PaymentSerializer shape" } }
+
+// Response  404  (unknown reference, or someone else's — no existence leak)
+{ "error": "not_found", "message": "Payment not found." }
+```
+Only a **terminal** gateway outcome changes the row: `success` applies the amount
+rule above, `failed`/`reversed` mark the attempt `failed`, and non-terminal
+outcomes (`abandoned`, `pending`, `ongoing`, `processing`) leave the payment
+exactly as it was — the student just closed the checkout or the charge hasn't
+settled yet. Re-checking is always safe to retry.
 
 **POST /payments/webhook/**  (called by the gateway, not the frontend)
 ```json
@@ -423,16 +445,36 @@ Every error follows this shape, so the frontend only needs one error-handling pa
 { "error": "short_machine_code", "message": "Human-readable explanation" }
 ```
 
-| Status | When |
-|---|---|
-| 400 | Bad request — missing/invalid fields, invalid webhook signature |
-| 401 | Missing or invalid auth token |
-| 403 | Logged in, but not allowed (e.g. a student trying to create a contribution) |
-| 404 | Resource doesn't exist (e.g. bad contribution ID) |
-| 409 | Conflict — e.g. duplicate payment attempt (see section 4) |
-| 429 | Rate limited — too many requests (login/register are throttled server-side) |
-| 500 | Unexpected server error |
-| 502 | Upstream payment gateway is unavailable, malformed, or unsuccessful |
+| Status | When | `error` value |
+|---|---|---|
+| 400 | Bad request — missing/invalid fields, invalid webhook signature | `bad_request` |
+| 400 | Request body could not be parsed as JSON | `parse_error` |
+| 401 | Missing or invalid auth token — deliberately indistinguishable | `unauthorized` |
+| 403 | Logged in, but not allowed (e.g. a student trying to create a contribution) | `permission_denied` |
+| 404 | Resource doesn't exist **or isn't visible to this user** (e.g. bad contribution ID) | `not_found` |
+| 405 | Wrong HTTP method for that route | `method_not_allowed` |
+| 409 | Conflict — e.g. duplicate payment attempt (see section 4) | `conflict` |
+| 415 | Body sent with an unsupported `Content-Type` (send `application/json`) | `unsupported_media_type` |
+| 429 | Rate limited — login/register are throttled server-side at 10/min per IP | `throttled` |
+| 502 | Upstream payment gateway unavailable, malformed, or unsuccessful | `gateway_unavailable` |
+| 500 | Unexpected server error | **no JSON shape** — Django's own error page (no custom `handler500` exists yet). Show a generic "something went wrong, try again" and log the status. |
+
+A few endpoints return a **domain-specific** code that is more useful than the generic
+one. Branch on `payload.error` when you can; the status code is always authoritative:
+
+| Status | `error` | Where | What the UI should do |
+|---|---|---|---|
+| 409 | `already_paid` | `/payments/initiate/`, `POST /contributions/{id}/payments/` | The fee is already settled — hide "Pay now", refresh the row |
+| 400 | `claim_failed` | `/auth/claim/` | One generic message; the API never says which of matric/first name/code was wrong |
+| 400 | `weak_password` | `/auth/claim/`, `/auth/reset-password/` | Show the password rules returned in `message` |
+| 400 | `invalid_code` / `code_expired` | `/auth/reset-password/` | Codes are single-use and time-boxed — ask for a new one |
+| 400 | `email_taken` | `/auth/claim/` | Ask the student to pick a different email |
+| 403 | `forbidden` | `POST /contributions/{id}/payments/` | A rep may not mark *themselves* paid — only a real admin may |
+| 503 | `unavailable` | `POST /contributions/{id}/payments/` | Offline mark-paid isn't possible for this fee/student |
+
+**Rules of thumb for the single handler:** branch on `payload.error`, fall back to the
+status code, and always render `payload.message`. Every error below 500 — including the
+gateway webhook's rejections — carries both keys, so `message` is never missing.
 
 ---
 
@@ -445,6 +487,7 @@ Every error follows this shape, so the frontend only needs one error-handling pa
 - **Password reset** — no forgot-password flow exists yet. Worth deciding if this is in scope for the 16 days or explicitly cut for the demo.
 - **Token expiry** — tokens currently don't expire. Fine for a hackathon demo; flag if the team wants otherwise.
 - **Pagination** — list endpoints (`/contributions/`, `/payments/history/`, `/notifications/`) return everything with no paging. Fine at hackathon scale; would need revisiting for a real deployment.
+- **`500` has no JSON body** — DRF's `EXCEPTION_HANDLER` covers *handled* API errors only; an unhandled exception falls through to Django's own HTML error page, so a genuine 500 is the one status the frontend's single error handler can't read a `message` from. No `handler500` is registered today. The frontend already falls back to a generic "something went wrong" (see `FRONTEND_LINKING.md`), so this is a polish item, not a blocker — but it's the reason the error contract is stated as "every error **below** 500".
 
 ---
 

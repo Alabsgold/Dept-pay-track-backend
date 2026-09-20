@@ -1,7 +1,7 @@
 # Departmental Payment/Contribution System — Backend
 
 **Team Visionary Coders** — NACOS National Build Challenge
-**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **156/156 tests passing**
+**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **200/200 tests passing**
 
 Django + DRF backend that lets departments create contributions (dues, event
 fees, shirts, excursions) and students pay through Paystack with automatic
@@ -144,6 +144,8 @@ Then a **bug-hunt/fix pass** on the money paths, and a **launch-readiness pass**
 
 Base URL (local dev): `http://localhost:8000/api/`
 Full request/response shapes: [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md).
+Screen-by-screen wiring map, error-code table and the frontend integration
+checklist: [`docs/FRONTEND_LINKING.md`](docs/FRONTEND_LINKING.md).
 
 ### Auth, users & departments (`/api/`)
 | Method | Path | Who | Purpose |
@@ -360,13 +362,13 @@ reconciled in `API_CONTRACT.md` first, never patched silently.
 
 ```bash
 cd backend
-python manage.py test            # full suite — 156 tests
+python manage.py test            # full suite — 200 tests
 python manage.py check           # system check
 python manage.py makemigrations --check --dry-run   # model drift check
 python db_backup.py              # snapshot db.sqlite3 -> backups/ (downloadable)
 ```
 
-**156 tests**, split by concern:
+**200 tests**, split by concern:
 
 | App | Focus |
 |---|---|
@@ -374,6 +376,7 @@ python db_backup.py              # snapshot db.sqlite3 -> backups/ (downloadable
 | `contributions` | CRUD, visibility scoping, summary maths, mark-paid audit rules |
 | `payments` | initiate/webhook/verify/receipt, kobo maths, **every settlement rule**, idempotency, admin refund-review queue |
 | `notifications` | list/mark-read ownership, transition-only triggers, no duplicates |
+| `core` | cross-app frontend-integration contract: the single error shape and its codes, CORS, deployment settings |
 
 Test types:
 - `tests.py` — behaviour and security tests.
@@ -447,7 +450,10 @@ judges' demo so the wake-up doesn't eat your slot.
 ## Notes for teammates
 
 - **Frontend:** send `Authorization: Token <token>` on every request except
-  register/login/webhook. Handle `429` with the standard error shape.
+  register/login/claim/reset-password/departments/webhook. Write **one** error
+  handler for the `{error, message}` shape and handle `429`. Start from
+  [`docs/FRONTEND_LINKING.md`](docs/FRONTEND_LINKING.md) — it has the endpoint
+  map, the exact error-code table and the integration checklist.
 - **Payments teammate:** `POST /payments/initiate/` → redirect the student to
   the returned `checkout_url`. No backend code changes needed on your side.
 - **Data/AI teammate:** consume the `/analytics/` endpoints via a dedicated
