@@ -70,7 +70,7 @@ class ContributionContractTests(APITestCase):
         self.assertEqual(
             set(response.data.keys()),
             {'id', 'title', 'amount', 'deadline', 'is_mandatory',
-             'target_level', 'has_paid'},
+             'target_level', 'has_paid', 'department_id'},
         )
         self.assertEqual(response.data['amount'], '5000.00')
 

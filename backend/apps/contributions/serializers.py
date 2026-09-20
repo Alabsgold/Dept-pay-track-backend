@@ -58,6 +58,13 @@ class ContributionSerializer(serializers.ModelSerializer):
     def validate_description(self, value):
         return strip_tags(value) if value else value
 
+    def to_representation(self, instance):
+        representation = super().to_representation(instance)
+        request = self.context.get('request')
+        if request is not None and request.method == 'POST':
+            representation['department_id'] = instance.department_id
+        return representation
+
     def get_has_paid(self, obj):
         request = self.context.get('request')
         user = getattr(request, 'user', None) if request is not None else None

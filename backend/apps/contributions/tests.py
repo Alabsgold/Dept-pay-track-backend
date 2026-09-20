@@ -168,7 +168,8 @@ class ContributionTests(APITestCase):
         self.assertEqual(r.status_code, 201)
         self.assertEqual(
             sorted(r.data.keys()),
-            sorted(['id', 'title', 'amount', 'deadline', 'is_mandatory', 'target_level', 'has_paid']))
+            sorted(['id', 'title', 'amount', 'deadline', 'is_mandatory',
+                    'target_level', 'has_paid', 'department_id']))
         self.assertEqual(r.data['amount'], '5000.00')
         self.assertIs(r.data['has_paid'], False)
         c = Contribution.objects.get(pk=r.data['id'])
