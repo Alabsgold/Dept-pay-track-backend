@@ -1,6 +1,6 @@
 # Backend API Contract — Departmental Payment/Contribution System
 Team Visionary Coders — NACOS National Build Challenge
-**v2 — reviewed and updated with student-level fields, error handling, and gap fixes**
+**v2.1 — frontend integration hardening, verified by the Phase 1 test suite**
 
 This is what the backend exposes. Frontend builds against these endpoints;
 whoever's on the Payment Gateway side needs the `/payments/` section especially.
@@ -38,22 +38,47 @@ Base URL (local dev): `http://localhost:8000/api/`
 ```
 `level` is new — one of `"100"`, `"200"`, `"300"`, `"400"`, `"500"`.
 
+**Registration hardening (v2.1):**
+- A username must not contain `@`; use email or matric number separately at login.
+- Duplicate `username`, `email`, or `matric_number` values are checked
+  case-insensitively and return the same generic `400` error below — the response
+  never reveals which identifier collided.
+- Privileged account fields such as `role`, `is_staff`, `is_superuser`, and
+  `is_active` are ignored: public registration always creates an active student.
+- Privilege fields are also ignored by `PATCH /auth/me/`.
+
+```json
+// Response  400 for any duplicate identifier
+{ "error": "bad_request", "message": "Unable to register with the provided details." }
+```
+
 **POST /auth/login/**
 ```json
-// Request
+// Request — use exactly one of username, email, or matric_number
 { "username": "jdoe", "password": "..." }
+{ "email": "JDOE@school.edu.ng", "password": "..." }
+{ "matric_number": "csc/2021/045", "password": "..." }
 
 // Response  200
 { "token": "9f8a3b...", "user": { "id": 12, "username": "jdoe", "role": "student" } }
 ```
 Frontend stores the token and sends it as `Authorization: Token <token>` on every request after this.
 
+**Login identifier rules (v2.1):**
+- `email` and `matric_number` are matched case-insensitively.
+- `username` remains exact-case and cannot be used as an email-like identifier.
+- A missing, invalid, inactive, or unclaimed account returns the same generic
+  `400 { "error": "bad_request", "message": "Invalid username or password." }`.
+
 **GET /auth/me/**
 ```json
 // Response  200
 { "id": 12, "username": "jdoe", "email": "jdoe@school.edu.ng", "matric_number": "CSC/2021/045",
-  "department": "Computer Science", "level": "400", "role": "student", "phone_number": "" }
+  "department": "Computer Science", "full_name": "John Doe", "level": "400",
+  "role": "student", "phone_number": "" }
 ```
+`full_name` is read-only. It joins trimmed first and last names; when both are
+blank, it falls back to `username`. It is not accepted as a profile-edit field.
 
 **PATCH /auth/me/**  — NEW, fixes a real gap: students had no way to update their own info after registering
 ```json
@@ -62,7 +87,10 @@ Frontend stores the token and sends it as `Authorization: Token <token>` on ever
 
 // Response  200 → same shape as GET /auth/me/
 ```
-`username`, `email`, and `matric_number` are NOT editable here — those need admin intervention if wrong (out of scope for now; flag to the team if this becomes a real need).
+Only `phone_number` and `level` are freely editable. `department_id` may be set
+once while it is empty. `username`, `email`, `matric_number`, `department`,
+`full_name`, and `role` are read-only; privileged account flags such as
+`is_staff`, `is_superuser`, and `is_active` are ignored.
 
 ### Roster import + account claiming (NEW)
 
@@ -188,13 +216,22 @@ means only that level sees/owes it.
 
 **POST /contributions/**  (class rep/admin only)
 ```json
-// Request
+// Request — deadline is required; use null for an open-ended collection
 { "title": "Excursion Fee", "description": "...", "amount": "5000.00",
   "deadline": "2026-10-15T23:59:00Z", "is_mandatory": true, "target_level": "400" }
 
-// Response  201 → same shape as GET
+// Response  201 — the GET/list item shape plus department_id
+{ "id": 5, "title": "Excursion Fee", "amount": "5000.00",
+  "deadline": "2026-10-15T23:59:00Z", "is_mandatory": true, "target_level": "400",
+  "has_paid": false, "department_id": 3 }
 ```
-`target_level` is optional — omit or send `null` for a contribution that applies to the whole department.
+`deadline` must be present: omitting it is `400`; sending an explicit `null`
+creates an open-ended contribution. `target_level` is optional — omit or send
+`null` for a contribution that applies to the whole department.
+
+Class representatives should not send `department_id`: the backend always uses
+their own department. Admins may optionally send it to target another
+department; a system admin without a department must do so.
 
 **GET /contributions/{id}/payments/**  — NEW (class rep/admin only)
 ```json
@@ -291,6 +328,18 @@ never overwrites an already-reviewed refund flag (that would risk a double refun
 `/payments/initiate/` also rejects a fee whose `deadline` has already passed (`400`), so
 nobody starts a payment for something no longer due.
 
+**Gateway failure handling (v2.1):**
+Request timeouts, non-JSON responses, and unsuccessful or incomplete gateway
+responses for `/payments/initiate/` and `/payments/verify/{reference}/` return:
+```json
+// Response  502
+{ "error": "gateway_unavailable", "message": "Payment gateway is unavailable. Try again shortly." }
+```
+These responses never expose raw gateway payloads or provider exception details.
+Logs record only safe operation/status metadata (and the payment reference on
+webhook settlement); secrets, authorization headers, and raw payloads are never
+logged. Raw webhook payloads remain archived in `payments.Transaction` for audit.
+
 **POST /payments/webhook/**  (called by the gateway, not the frontend)
 ```json
 // Incoming payload (Paystack shape, example)
@@ -307,10 +356,10 @@ above, and fires a `Notification`. Invalid signature → `400`, no processing. M
 `{"received": true}` and changes nothing, so Paystack's retries can never double-credit a
 student.
 
-> ⚠️ **Known gap (flagged, not hidden):** the `Transaction` model described in
-> `docs/BACKEND_DB_STRUCTURE.md` was never built, so the raw gateway payload is **not**
-> stored. Until it exists there is no raw-payload audit trail — only the `Payment` row.
-> See `directives/LAUNCH_PLAN.md`.
+**Webhook proof record:** the first delivery for each reference is archived
+verbatim in `payments.Transaction` (`payment`, `reference`, `raw_payload`,
+`received_at`). Retries do not create duplicate proof rows; unknown references
+are still retained with `payment: null` for forensics.
 
 **GET /payments/history/**
 ```json
@@ -333,6 +382,21 @@ student.
 **Note:** there is deliberately no `POST /notifications/` to create one. Notifications are
 system-generated only (fired automatically on payment success/failure and new contribution
 creation, per `AGENTS.md`) — frontend never creates these directly.
+
+**GET /notifications/**
+```json
+// Response  200
+[
+  { "id": 18, "notification_type": "payment_success",
+    "message": "Your payment of ₦3,500.00 for \"Departmental Shirt 2026\" was successful.",
+    "contribution": 5, "contribution_title": "Departmental Shirt 2026",
+    "is_read": false, "created_at": "2026-09-20T12:00:00Z" }
+]
+```
+This is the safe serializer shape for both list and mark-read responses.
+`recipient` and other internal/account fields are deliberately not exposed.
+
+**POST /notifications/{id}/read/** returns the same safe shape with `is_read: true`.
 
 ---
 
@@ -368,6 +432,7 @@ Every error follows this shape, so the frontend only needs one error-handling pa
 | 409 | Conflict — e.g. duplicate payment attempt (see section 4) |
 | 429 | Rate limited — too many requests (login/register are throttled server-side) |
 | 500 | Unexpected server error |
+| 502 | Upstream payment gateway is unavailable, malformed, or unsuccessful |
 
 ---
 
@@ -399,4 +464,4 @@ These apply to every endpoint above. Backend must enforce them; QA must test the
 
 **Analytics (section 6) — permissions decided:** both `/analytics/` endpoints are **class rep/admin only** (`403` for students). The Data/AI teammate consumes them via a dedicated read-only service account with the class-rep role — never from the browser.
 
-**Registration hardening (section 1):** passwords are validated with Django's built-in validators (min 8 chars, common-password and all-numeric checks). Duplicate email/matric attempts return a **generic** error message (no account enumeration). Login and register are rate-limited server-side at 10/min per IP — clients must handle `429` using the standard error shape.
+**Registration hardening (section 1):** passwords are validated with Django's built-in validators (min 8 chars, common-password and all-numeric checks). Duplicate `username`, `email`, or `matric_number` attempts return one **generic** error (no account enumeration), with case-insensitive identifier checks; usernames cannot contain `@`. Privileged account fields are ignored on registration and profile updates. Login and register are rate-limited server-side at 10/min per IP — clients must handle `429` using the standard error shape.
