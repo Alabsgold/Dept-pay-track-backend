@@ -180,6 +180,7 @@ class InitializePaymentView(APIView):
                 timeout=10
             )
         except requests.exceptions.RequestException:
+            logger.warning('paystack initialize unavailable')
             return Response(
                 {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
                 status=502
@@ -189,8 +190,9 @@ class InitializePaymentView(APIView):
             result = response.json()
         except ValueError:
             # Non-JSON body (e.g. a proxy's HTML error page) — fail cleanly.
+            logger.warning('paystack initialize invalid response status_code=%s', response.status_code)
             return Response(
-                {'error': 'gateway_unavailable', 'message': 'Payment gateway returned an invalid response. Try again shortly.'},
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
                 status=502
             )
 
@@ -201,12 +203,10 @@ class InitializePaymentView(APIView):
             or not result_data.get('reference')
             or not result_data.get('authorization_url')
         ):
+            logger.warning('paystack initialize rejected status_code=%s', response.status_code)
             return Response(
-                {
-                    'error': 'Unable to initialize payment.',
-                    'details': result
-                },
-                status=400
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
+                status=502
             )
 
         payment = Payment.objects.create(
@@ -264,6 +264,7 @@ class VerifyPaymentView(APIView):
         except requests.exceptions.RequestException:
             # Gateway outage/timeout — our row stays untouched and the client
             # can retry, mirroring InitializePaymentView's 502 contract.
+            logger.warning('paystack verify unavailable')
             return Response(
                 {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
                 status=502
@@ -272,15 +273,17 @@ class VerifyPaymentView(APIView):
             result = response.json()
         except ValueError:
             # Non-JSON body (e.g. a proxy's HTML error page) — fail cleanly.
+            logger.warning('paystack verify invalid response status_code=%s', response.status_code)
             return Response(
-                {'error': 'gateway_unavailable', 'message': 'Payment gateway returned an invalid response. Try again shortly.'},
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
                 status=502
             )
 
         if not result.get('status') or not result.get('data'):
+            logger.warning('paystack verify rejected status_code=%s', response.status_code)
             return Response(
-                {'error': 'Unable to verify payment.', 'details': result},
-                status=400
+                {'error': 'gateway_unavailable', 'message': 'Payment gateway is unavailable. Try again shortly.'},
+                status=502
             )
 
         paystack_status = result['data'].get('status')
