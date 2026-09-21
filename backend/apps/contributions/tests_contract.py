@@ -46,12 +46,12 @@ class ContributionContractTests(APITestCase):
         item = next(
             c for c in response.data if c['id'] == self.contribution.id
         )
-        # Contract §3: {id, title, amount, deadline, is_mandatory,
-        #               target_level, has_paid}
+        # Contract §3: {id, title, description, amount, deadline, is_mandatory,
+        #               target_level, is_closed, has_paid, created_at}
         self.assertEqual(
             set(item.keys()),
-            {'id', 'title', 'amount', 'deadline', 'is_mandatory',
-             'target_level', 'has_paid'},
+            {'id', 'title', 'description', 'amount', 'deadline', 'is_mandatory',
+             'target_level', 'is_closed', 'has_paid', 'created_at'},
         )
         # Money rule: amounts are strings, never floats.
         self.assertEqual(item['amount'], '3500.00')
@@ -69,8 +69,9 @@ class ContributionContractTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(
             set(response.data.keys()),
-            {'id', 'title', 'amount', 'deadline', 'is_mandatory',
-             'target_level', 'has_paid', 'department_id'},
+            {'id', 'title', 'description', 'amount', 'deadline', 'is_mandatory',
+             'target_level', 'is_closed', 'has_paid', 'created_at',
+             'department_id'},
         )
         self.assertEqual(response.data['amount'], '5000.00')
 

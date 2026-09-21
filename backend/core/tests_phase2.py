@@ -403,8 +403,9 @@ class FrontendPaymentFlowIntegrationTests(APITestCase):
         self.assertEqual(
             set(response.data.keys()),
             {
-                'id', 'title', 'amount', 'deadline', 'is_mandatory',
-                'target_level', 'has_paid', 'department_id',
+                'id', 'title', 'description', 'amount', 'deadline',
+                'is_mandatory', 'target_level', 'is_closed', 'has_paid',
+                'created_at', 'department_id',
             },
         )
         self.assertEqual(response.data['department_id'], self.department.id)
@@ -437,8 +438,9 @@ class FrontendPaymentFlowIntegrationTests(APITestCase):
         self.assertEqual(
             set(contribution.keys()),
             {
-                'id', 'title', 'amount', 'deadline', 'is_mandatory',
-                'target_level', 'has_paid',
+                'id', 'title', 'description', 'amount', 'deadline',
+                'is_mandatory', 'target_level', 'is_closed', 'has_paid',
+                'created_at',
             },
         )
 

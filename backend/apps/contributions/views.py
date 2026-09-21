@@ -1,6 +1,5 @@
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from rest_framework import generics, serializers, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -47,9 +46,8 @@ class ContributionListCreateView(generics.ListCreateAPIView):
         qs = _visible_contributions(self.request.user)
 
         if self.request.method == 'GET' and self.request.user.role == User.ROLE_STUDENT:
-            # Students only see contributions still open, and only their level.
-            now = timezone.now()
-            qs = qs.filter(Q(deadline__isnull=True) | Q(deadline__gte=now))
+            # Students only see fees still open, and only their level.
+            qs = qs.filter(Contribution.open_q())
             if self.request.user.level:
                 qs = qs.filter(
                     Q(target_level__isnull=True) | Q(target_level=self.request.user.level)
@@ -83,12 +81,51 @@ class ContributionListCreateView(generics.ListCreateAPIView):
         serializer.save(department=target_department, created_by=user)
 
 
-class ContributionDetailView(generics.RetrieveAPIView):
+class ContributionDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET is open to anyone who can see the fee; PATCH and DELETE are
+    rep/admin-only, scoped to their own department.
+
+    DELETE **closes** the fee — it never removes the row. See `perform_destroy`.
+    """
+
     serializer_class = ContributionSerializer
-    permission_classes = [IsAuthenticated]
+    # PATCH only for writes: a half-specified PUT would let a caller blank a
+    # required field by omitting it, and nothing in the contract uses PUT.
+    http_method_names = ['get', 'patch', 'delete', 'head', 'options']
+
+    def get_permissions(self):
+        if self.request.method in ('PATCH', 'DELETE'):
+            return [IsClassRepOrAdmin()]
+        return [IsAuthenticated()]
 
     def get_queryset(self):
         return _visible_contributions(self.request.user)
+
+    def perform_update(self, serializer):
+        """
+        A rep may never MOVE a fee to another department — that would let them
+        hand off (or hijack) a collection they don't own. The department is
+        fixed at creation and only a system admin may change it.
+        """
+        user = self.request.user
+        if user.role == User.ROLE_ADMIN or user.is_staff or user.is_superuser:
+            serializer.save()
+        else:
+            serializer.save(department=serializer.instance.department)
+
+    def perform_destroy(self, instance):
+        """
+        DELETE closes the fee instead of deleting it.
+
+        The `Payment` rows referencing this fee are the audit trail of money
+        actually collected, so destroying the fee would either be blocked
+        (`created_by` is PROTECT) or orphan that record. Closing keeps every
+        historical total intact while stopping new payments; set `is_closed`
+        back to false through PATCH to reopen.
+        """
+        instance.is_closed = True
+        instance.save(update_fields=['is_closed', 'updated_at'])
 
 
 class ContributionSummaryView(APIView):

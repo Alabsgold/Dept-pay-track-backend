@@ -29,10 +29,10 @@ class ContributionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Contribution
-        # Response shape matches API_CONTRACT.md exactly:
-        # { id, title, amount, deadline, is_mandatory, target_level, has_paid }.
-        # `description` is accepted on create but deliberately not returned
-        # (contract shows the same shape for GET and POST 201 responses).
+        # Response shape matches API_CONTRACT.md §3. `created_at` and
+        # `description` are returned because the fee list/detail screens render
+        # them; `department_id` is server-chosen and returned on create so the
+        # caller can confirm which department the fee landed in.
         fields = [
             'id',
             'title',
@@ -41,12 +41,14 @@ class ContributionSerializer(serializers.ModelSerializer):
             'deadline',
             'is_mandatory',
             'target_level',
+            'is_closed',
             'has_paid',
             'department_id',
+            'created_at',
         ]
-        read_only_fields = ['id', 'has_paid']
+        read_only_fields = ['id', 'has_paid', 'created_at']
         extra_kwargs = {
-            'description': {'write_only': True, 'required': False},
+            'description': {'required': False},
         }
 
     def validate_amount(self, value):

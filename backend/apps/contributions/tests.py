@@ -149,8 +149,11 @@ class ContributionTests(APITestCase):
         row = r.data[0]
         self.assertEqual(
             sorted(row.keys()),
-            sorted(['id', 'title', 'amount', 'deadline', 'is_mandatory', 'target_level', 'has_paid']))
+            sorted(['id', 'title', 'description', 'amount', 'deadline',
+                    'is_mandatory', 'target_level', 'is_closed', 'has_paid',
+                    'created_at']))
         self.assertIs(row['has_paid'], False)
+        self.assertIs(row['is_closed'], False)
         self.assertEqual(row['amount'], '3500.00')  # string, decimal, exact
 
     def test_other_department_student_sees_nothing(self):
@@ -168,8 +171,9 @@ class ContributionTests(APITestCase):
         self.assertEqual(r.status_code, 201)
         self.assertEqual(
             sorted(r.data.keys()),
-            sorted(['id', 'title', 'amount', 'deadline', 'is_mandatory',
-                    'target_level', 'has_paid', 'department_id']))
+            sorted(['id', 'title', 'description', 'amount', 'deadline',
+                    'is_mandatory', 'target_level', 'is_closed', 'has_paid',
+                    'created_at', 'department_id']))
         self.assertEqual(r.data['amount'], '5000.00')
         self.assertIs(r.data['has_paid'], False)
         c = Contribution.objects.get(pk=r.data['id'])

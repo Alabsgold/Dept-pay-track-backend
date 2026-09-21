@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.users.models import Department, User
@@ -45,6 +46,12 @@ class Contribution(models.Model):
         null=True,
         blank=True,
     )
+    # A fee the department has stopped accepting. Closing is ALWAYS preferred
+    # over deleting: the `Payment` rows that reference this fee are the audit
+    # trail of money actually collected, so a fee that ever took payment must
+    # survive. A closed fee disappears for students and can no longer be paid,
+    # but stays visible to reps/admins and still counts in every total.
+    is_closed = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -63,8 +70,21 @@ class Contribution(models.Model):
 
     @property
     def is_active(self):
-        """A contribution students can still see/pay: no deadline or deadline ahead."""
-        return self.deadline is None or self.deadline >= timezone.now()
+        """A contribution students can still see/pay: open, and deadline ahead."""
+        return not self.is_closed and (
+            self.deadline is None or self.deadline >= timezone.now()
+        )
+
+    @staticmethod
+    def open_q(now=None):
+        """
+        Filter for fees students may still see and pay: not closed, and either
+        no deadline or one still ahead. Single source of truth — the student
+        list and the payment-initiate gate must never disagree about which fees
+        are open, or a stale id could start a payment for a closed collection.
+        """
+        now = now or timezone.now()
+        return Q(is_closed=False) & (Q(deadline__isnull=True) | Q(deadline__gte=now))
 
     def eligible_students(self):
         """Users who owe/see this contribution (department + level + role).

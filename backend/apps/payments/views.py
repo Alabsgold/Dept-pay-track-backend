@@ -8,7 +8,6 @@ from decimal import Decimal, InvalidOperation
 from django.conf import settings
 from django.db import IntegrityError
 from django.db.models import Q
-from django.utils import timezone
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -135,7 +134,7 @@ class InitializePaymentView(APIView):
             id=contribution_id,
             department=user.department,
         ).filter(
-            Q(deadline__isnull=True) | Q(deadline__gte=timezone.now())
+            Contribution.open_q()
         ).filter(
             Q(target_level__isnull=True) | Q(target_level=user.level)
         ).first()
