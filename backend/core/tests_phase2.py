@@ -296,6 +296,17 @@ class CorsFrontendIntegrationTests(APITestCase):
     def _first_frontend_origin(self):
         return settings.CORS_ALLOWED_ORIGINS[0]
 
+    def test_vite_dev_origin_is_allowlisted(self):
+        """
+        The real frontend (dept-payments, Vite) calls us cross-origin from
+        http://localhost:5173 — if the allowlist default ever drifts away
+        from that, every browser request dies at preflight. Pin it.
+        """
+        self.assertIn('http://localhost:5173', settings.CORS_ALLOWED_ORIGINS)
+        self.assertIn(
+            'http://127.0.0.1:5173', settings.CORS_ALLOWED_ORIGINS
+        )
+
     def test_browser_preflight_allows_frontend_json_and_auth(self):
         response = self.client.options(
             '/api/auth/me/',

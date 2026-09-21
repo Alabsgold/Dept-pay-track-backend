@@ -209,7 +209,16 @@ REST_FRAMEWORK = {
     'NUM_PROXIES': int(config('NUM_PROXIES', default=0)),
 }
 
-CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='http://localhost:3000', cast=Csv())
+# Explicit frontend origins (env-overridable for production). The real Vite
+# dev server runs on 5173 (see dept-payments/vite.config.js) — 3000 is kept
+# for other tooling.
+CORS_ALLOWED_ORIGINS = config(
+    'CORS_ALLOWED_ORIGINS',
+    default=(
+        'http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000'
+    ),
+    cast=Csv(),
+)
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = True

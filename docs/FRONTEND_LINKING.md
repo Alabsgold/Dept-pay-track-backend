@@ -36,6 +36,18 @@ this table, ASK before building a new endpoint — do not invent routes.
 Rate limits: login, register, claim and reset are throttled at 10/min per IP. On
 `429` show the returned `message` and stop retrying — don't hammer.
 
+**CORS — your dev origin is allowlisted.** The backend allowlist includes
+`http://localhost:5173` and `http://127.0.0.1:5173` (Vite's dev port) plus
+`http://localhost:3000`. Set `VITE_API_BASE_URL=http://127.0.0.1:8000/api` and
+call the API directly — no Vite proxy needed. Before deploying, the backend team
+sets `CORS_ALLOWED_ORIGINS` on Render to your deployed origin.
+
+**Backend self-check (optional, useful before wiring):** with the backend
+running (`python manage.py runserver`), `python backend/smoke_test.py
+http://127.0.0.1:8000` walks a full browser-like flow over real HTTP — CORS
+preflight from 5173, login, create/edit/close a contribution, closed-fee
+protection, notifications, analytics — and prints PASS/FAIL per call.
+
 **Login identifier routing — read this before building the login form.**
 `/auth/login/` is one endpoint with three optional identifier fields, and the
 **key you use must match the type of value** — you cannot put any string in any

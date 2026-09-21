@@ -1,0 +1,5 @@
+# Backend Max diagnostic data
+.backend-doctor/
+
+# Local environment secrets
+.env

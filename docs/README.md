@@ -74,7 +74,7 @@ Current as of the Sept 18 deployment-hardening sprint (full tour in the root
 | Contributions (+ payments bridge, audit rules) | Complete |
 | Payments (+ settlement rules, refund queue, race-proofing, webhook proof archive) | Complete |
 | Notifications | Complete |
-| Tests | 222/222 passing |
+| Tests | 223/223 passing |
 | Deployment | `render.yaml` + PostgreSQL + health check ready — needs a real Render deploy + Paystack live webhook URL |
 
 ## Known constraints
