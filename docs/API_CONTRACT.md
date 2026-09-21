@@ -1,6 +1,6 @@
 # Backend API Contract — Departmental Payment/Contribution System
 Team Visionary Coders — NACOS National Build Challenge
-**v2.1 — frontend integration hardening, verified by the Phase 1 test suite**
+**v2.2 — Phase 3: contribution edit/close + live analytics endpoints · 222 tests passing**
 
 This is what the backend exposes. Frontend builds against these endpoints;
 whoever's on the Payment Gateway side needs the `/payments/` section especially.
@@ -198,21 +198,26 @@ role.
 | GET | `/contributions/` | List active contributions for the logged-in student's department (and matching level, if set) |
 | POST | `/contributions/` | Create a new contribution (class rep/admin only) |
 | GET | `/contributions/{id}/` | Get one contribution's detail |
+| PATCH | `/contributions/{id}/` | **NEW (Phase 3)** — Edit a fee's title/amount/deadline/level (class rep/admin only) |
+| DELETE | `/contributions/{id}/` | **NEW (Phase 3)** — **Close** a fee (soft-close, never deleted; class rep/admin only) |
 | GET | `/contributions/{id}/summary/` | Total expected vs collected (feeds Data/AI dashboard) |
 | GET | `/contributions/{id}/payments/` | **NEW** — Full list of every student's payment status for this contribution (class rep/admin only) |
 
 **GET /contributions/**
 ```json
-// Response  200
+// Response  200  (students see only open fees for their level; reps/admins see
+// every fee in their department, including closed ones)
 [
-  { "id": 5, "title": "Departmental Shirt 2026", "amount": "3500.00",
-    "deadline": "2026-09-30T23:59:00Z", "is_mandatory": true, "target_level": null,
-    "has_paid": false }
+  { "id": 5, "title": "Departmental Shirt 2026", "description": "Annual shirt",
+    "amount": "3500.00", "deadline": "2026-09-30T23:59:00Z", "is_mandatory": true,
+    "target_level": null, "is_closed": false, "has_paid": false,
+    "department_id": 3, "created_at": "2026-09-01T09:00:00Z" }
 ]
 ```
 `has_paid` is computed per the logged-in student so the frontend doesn't have to.
 `target_level: null` means it applies to every level; otherwise a value like `"400"`
-means only that level sees/owes it.
+means only that level sees/owes it. `is_closed` lets reps/admins render closed fees
+greyed-out with a "reopen" action — students never receive closed fees at all.
 
 **POST /contributions/**  (class rep/admin only)
 ```json
@@ -220,10 +225,11 @@ means only that level sees/owes it.
 { "title": "Excursion Fee", "description": "...", "amount": "5000.00",
   "deadline": "2026-10-15T23:59:00Z", "is_mandatory": true, "target_level": "400" }
 
-// Response  201 — the GET/list item shape plus department_id
-{ "id": 5, "title": "Excursion Fee", "amount": "5000.00",
+// Response  201 — the same shape as a GET detail row
+{ "id": 5, "title": "Excursion Fee", "description": "Trip", "amount": "5000.00",
   "deadline": "2026-10-15T23:59:00Z", "is_mandatory": true, "target_level": "400",
-  "has_paid": false, "department_id": 3 }
+  "is_closed": false, "has_paid": false, "department_id": 3,
+  "created_at": "2026-09-16T12:00:00Z" }
 ```
 `deadline` must be present: omitting it is `400`; sending an explicit `null`
 creates an open-ended contribution. `target_level` is optional — omit or send
@@ -232,6 +238,33 @@ creates an open-ended contribution. `target_level` is optional — omit or send
 Class representatives should not send `department_id`: the backend always uses
 their own department. Admins may optionally send it to target another
 department; a system admin without a department must do so.
+
+**PATCH /contributions/{id}/**  — Phase 3 (class rep/admin only)
+Partial edit of a fee: send only the fields you're changing. Editable fields are
+`title`, `description`, `amount`, `deadline`, `is_mandatory`, `target_level` and
+`is_closed`. `department_id` is **ignored for reps** — a rep may never move a fee
+to another department; only a system admin may.
+```json
+// Request (any subset)
+{ "amount": "6500.00", "deadline": "2026-10-20T23:59:00Z" }
+
+// Response  200 — the full updated row, same shape as GET detail
+{ "id": 5, "…": "…", "amount": "6500.00", "is_closed": false }
+```
+Errors: `403` for students (they can't edit any fee) and `404` for a fee outside
+the caller's department (existence is never leaked across departments). Reopening
+a closed fee is just `PATCH { "is_closed": false }` — students see it again and it
+becomes payable, with every historical payment intact.
+
+**DELETE /contributions/{id}/**  — Phase 3 (class rep/admin only)
+"Deleting" a fee **closes** it instead: `204 No Content`, and the row survives with
+`is_closed: true`. A fee that ever took a payment is audit evidence — it must never
+vanish. A closed fee:
+- disappears from every student's list and can't be initiated (`404`, same as an
+  expired fee — a stale id can't start a payment nobody is accepting);
+- stays visible to its department's reps/admins (greyed-out) so totals, summaries
+  and `outstanding-students` keep reporting it;
+- keeps every collected total and every `Payment` row exactly as they were.
 
 **GET /contributions/{id}/payments/**  — NEW (class rep/admin only)
 ```json
@@ -422,19 +455,49 @@ This is the safe serializer shape for both list and mark-read responses.
 
 ---
 
-## 6. Analytics (feeds the Data/AI person's dashboard)
+## 6. Analytics — BUILT in Phase 3 (feeds the Data/AI person's dashboard)
+
+Read-only aggregate endpoints, scoped to the caller's department. **Class rep/admin
+only** — a student calling either endpoint gets `403 permission_denied`. The
+Data/AI teammate consumes them via a dedicated read-only service account with the
+class-rep role — never from the browser, never from a direct DB query.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/analytics/collection-stats/` | Total collected vs outstanding, per contribution/department |
-| GET | `/analytics/outstanding-students/?contribution_id=5` | List of students who haven't paid a given contribution |
+| GET | `/analytics/collection-stats/` | Totals for one fee (`?contribution_id=5`) or the whole department |
+| GET | `/analytics/outstanding-students/?contribution_id=5` | Students who haven't paid a given contribution |
 
 **GET /analytics/collection-stats/**
 ```json
-// Response  200
+// Response  200 — department-wide (no query param) or one fee (with it)
 { "total_expected": "175000.00", "total_collected": "122500.00", "outstanding_count": 15 }
 ```
-This is the raw data source for any AI assistant feature (e.g. "how much have we collected?") — the assistant layer just queries this endpoint and phrases the answer in natural language, no separate data pipeline needed.
+- `?contribution_id=5` scopes to one fee; without it you get every fee in your
+  department summed. `contribution_id` must belong to **your** department —
+  anything else is `404 not_found` (existence is never leaked across departments);
+  a non-numeric id is `400 bad_request`.
+- Figures come from the **same model methods** `/contributions/{id}/summary/` uses,
+  so the two can never disagree. Closed and expired fees still count — closing a
+  collection never erases what it collected.
+
+**GET /analytics/outstanding-students/?contribution_id=5**
+```json
+// Response  200 — safe identity fields only
+[
+  { "id": 41, "full_name": "Ada Bello", "matric_number": "CSC/2021/061", "level": "400" }
+]
+```
+- `contribution_id` is **required** — "outstanding" is only meaningful against one
+  fee (a department-wide answer across fees of different amounts would be wrong);
+  missing it is `400 bad_request`.
+- Rows are the fee's eligible students (department + level, reps included — reps
+  pay dues too) minus whoever has a successful payment, ordered by matric number.
+- Deliberately excludes emails/phone numbers: this list can be large and must
+  never become a contact-spreading vector.
+
+This is the raw data source for any AI assistant feature (e.g. "how much have we
+collected?") — the assistant layer just queries this endpoint and phrases the
+answer in natural language, no separate data pipeline needed.
 
 ---
 
@@ -479,12 +542,12 @@ gateway webhook's rejections — carries both keys, so `message` is never missin
 ---
 
 ## Notes for the team
-- All endpoints except `register`, `login`, and `webhook` require the `Authorization: Token <token>` header.
+- All endpoints except `register`, `login`, `claim`, `reset-password`, `departments`, and `webhook` require the `Authorization: Token <token>` header.
 - Admin/class-rep-only endpoints are marked above — backend enforces this via role checks (returning `403` per section 7), frontend just needs to hide those UI actions for regular students.
 - Dates are ISO 8601 UTC. Amounts are strings to avoid floating-point rounding issues — display as-is, don't parse as float.
 
 ## Open questions for the team (not built yet — flagging instead of guessing)
-- **Password reset** — no forgot-password flow exists yet. Worth deciding if this is in scope for the 16 days or explicitly cut for the demo.
+- ~~Password reset~~ — **built**: `/auth/reset-code/` (rep/admin issues a single-use code) and `/auth/reset-password/` (student redeems it). No longer open.
 - **Token expiry** — tokens currently don't expire. Fine for a hackathon demo; flag if the team wants otherwise.
 - **Pagination** — list endpoints (`/contributions/`, `/payments/history/`, `/notifications/`) return everything with no paging. Fine at hackathon scale; would need revisiting for a real deployment.
 - **`500` has no JSON body** — DRF's `EXCEPTION_HANDLER` covers *handled* API errors only; an unhandled exception falls through to Django's own HTML error page, so a genuine 500 is the one status the frontend's single error handler can't read a `message` from. No `handler500` is registered today. The frontend already falls back to a generic "something went wrong" (see `FRONTEND_LINKING.md`), so this is a polish item, not a blocker — but it's the reason the error contract is stated as "every error **below** 500".

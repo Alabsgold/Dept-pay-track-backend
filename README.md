@@ -1,7 +1,7 @@
 # Departmental Payment/Contribution System — Backend
 
 **Team Visionary Coders** — NACOS National Build Challenge
-**Branch:** `backend-dev` · **Status:** all 5 build modules complete · **200/200 tests passing**
+**Branch:** `backend-dev` · **Status:** all build modules complete · **222/222 tests passing**
 
 Django + DRF backend that lets departments create contributions (dues, event
 fees, shirts, excursions) and students pay through Paystack with automatic
@@ -169,6 +169,8 @@ checklist: [`docs/FRONTEND_LINKING.md`](docs/FRONTEND_LINKING.md).
 | `GET` | `/` | any | Fees visible to the caller (own department + level, not expired) |
 | `POST` | `/` | rep/admin | Create a fee |
 | `GET` | `/{id}/` | any | Fee detail |
+| `PATCH` | `/{id}/` | rep/admin | Edit a fee (title/amount/deadline/level/…; `is_closed: false` reopens) |
+| `DELETE` | `/{id}/` | rep/admin | **Soft-close** a fee — never deleted; audit evidence and totals preserved |
 | `GET` | `/{id}/summary/` | any | Expected / collected / outstanding counts |
 | `GET` | `/{id}/payments/` | rep/admin | Roster: who paid, how, and who recorded it |
 | `POST` | `/{id}/payments/` | rep/admin | Mark a student paid **offline** (requires `receipt_reference`) |
@@ -189,8 +191,16 @@ checklist: [`docs/FRONTEND_LINKING.md`](docs/FRONTEND_LINKING.md).
 | `GET` | `/` | any | Own notifications (badge count = `is_read == false`) |
 | `POST` | `/{id}/read/` | owner | Mark one as read (idempotent) |
 
-> `/api/analytics/` appears in the contract but is **not built** — it belongs to
-> the Data/AI teammate. See `docs/ANALYTICS_INTEGRATION.md`.
+### Analytics (`/api/analytics/`)
+| Method | Path | Who | Purpose |
+|---|---|---|---|
+| `GET` | `/collection-stats/` | rep/admin | Totals for one fee (`?contribution_id=5`) or the whole department |
+| `GET` | `/outstanding-students/?contribution_id=5` | rep/admin | Students who haven't paid a given fee (safe fields only) |
+
+> Built in Phase 3 — read-only, rep/admin only (`403` for students) and scoped to
+> the caller's own department. The Data/AI teammate consumes these endpoints via a
+> dedicated class-rep-role service account — see `docs/ANALYTICS_INTEGRATION.md`
+> and `API_CONTRACT.md` §6.
 
 ---
 
@@ -341,15 +351,16 @@ never by the client (there is deliberately **no create endpoint**):
 
 ## Analytics handover (Data/AI teammate)
 
-`/api/analytics/` is intentionally **not built** by the backend (Emmanuel) — it is the
-Data/AI teammate's deliverable. To keep their work clean *and* protect this code:
+The two §6 endpoints **are built and live** (Phase 3): `/api/analytics/collection-stats/`
+and `/analytics/outstanding-students/` — read-only, rep/admin only, scoped to the
+caller's own department. The Data/AI teammate's dashboard consumes them through a
+dedicated **service account** with the class-rep role — never a direct DB
+connection, never a student login.
 
-- Read-model helpers already exist and are the sanctioned data source:
-  `Contribution.total_expected()`, `.total_collected()`, `.outstanding_count()`,
-  `.eligible_students()`, plus `contributions/payments_bridge.py`.
-- Access should go through a dedicated **service account** with
-  `IsClassRepOrAdmin`, never a direct DB connection.
-- Full brief, expected §6 response shapes and mutual sandboxing rules:
+- The figures come from the same model helpers the rest of the system uses
+  (`Contribution.total_expected()`, `.total_collected()`, `.outstanding_count()`),
+  so the dashboard can never disagree with `/contributions/{id}/summary/`.
+- Expected shapes, sandboxing rules and the full brief:
   [`docs/ANALYTICS_INTEGRATION.md`](docs/ANALYTICS_INTEGRATION.md).
 
 **Rules of engagement:** teammates consume our API and helpers; they do not edit
@@ -362,26 +373,28 @@ reconciled in `API_CONTRACT.md` first, never patched silently.
 
 ```bash
 cd backend
-python manage.py test            # full suite — 200 tests
+python manage.py test            # full suite — 222 tests
 python manage.py check           # system check
 python manage.py makemigrations --check --dry-run   # model drift check
 python db_backup.py              # snapshot db.sqlite3 -> backups/ (downloadable)
 ```
 
-**200 tests**, split by concern:
+**222 tests**, split by concern:
 
 | App | Focus |
 |---|---|
 | `users` | auth, roles, permissions, throttling, contract shapes, import/claim/reset/set-role |
-| `contributions` | CRUD, visibility scoping, summary maths, mark-paid audit rules |
+| `contributions` | CRUD, visibility scoping, edit/soft-close, summary maths, mark-paid audit rules |
 | `payments` | initiate/webhook/verify/receipt, kobo maths, **every settlement rule**, idempotency, admin refund-review queue |
 | `notifications` | list/mark-read ownership, transition-only triggers, no duplicates |
+| `analytics` | collection-stats / outstanding-students: department scoping, rep/admin gate, safe response shapes |
 | `core` | cross-app frontend-integration contract: the single error shape and its codes, CORS, deployment settings |
 
 Test types:
 - `tests.py` — behaviour and security tests.
 - `tests_contract.py` — locks the documented response shapes per endpoint.
 - `tests_roster.py` — import, claiming, reset and rep-promotion flows.
+- `tests_phase*.py` — phased hardening suites (Phase 1–3 regression locks).
 
 Tests run with `MD5PasswordHasher` only when `'test'` is in `sys.argv`, so the
 suite stays fast (a few seconds) without weakening production password hashing.
@@ -436,7 +449,7 @@ judges' demo so the wake-up doesn't eat your slot.
 
 | Item | Status |
 |---|---|
-| §6 `/api/analytics/` endpoints | **Deliberately not built** — Data/AI teammate's deliverable; handover in `docs/ANALYTICS_INTEGRATION.md` |
+| §6 `/api/analytics/` endpoints | **Built (Phase 3)** — `collection-stats` + `outstanding-students`, rep/admin only, department-scoped. Data/AI consumption guide: `docs/ANALYTICS_INTEGRATION.md` |
 | ~~`Transaction` model (raw webhook payload proof)~~ | **Built** (Sept 18 sprint): every verified webhook's raw payload is archived once per reference in `payments.Transaction`, visible read-only in Django admin |
 | Installment / partial payments | Not built. Settlement currently requires an **exact** amount, so installments need a per-fee "minimum amount" mode first |
 | Notifications response field `notification_type` | Shipped as-is; frontend to confirm the name |
@@ -461,7 +474,7 @@ judges' demo so the wake-up doesn't eat your slot.
 
 ## Project layout
 - `backend/core/` — settings, URL config, exception handler
-- `backend/apps/` — one Django app per concern (users, contributions, payments, notifications)
+- `backend/apps/` — one Django app per concern (users, contributions, payments, notifications, analytics)
 - `docs/` — API contract, DB structure, security audit report
 
 **written by** `alabiemmanuel`

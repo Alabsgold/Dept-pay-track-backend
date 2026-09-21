@@ -43,10 +43,10 @@ See `API_CONTRACT.md` for exact request/response shapes. Summary:
 |---|---|
 | Auth | register, login, logout, me, **roster import (CSV), account claim, claim batches, reset-code / reset-password, set-role** |
 | Departments | list |
-| Contributions | list, create, detail, summary, **roster (per-fee payments), manual mark-paid** |
+| Contributions | list, create, detail, **PATCH (edit) / DELETE (closes)**, summary, **roster (per-fee payments), manual mark-paid** |
 | Payments | initiate, webhook, verify, history, receipt, **unverified (admin refund-review queue)** |
 | Notifications | list, mark read |
-| Analytics | collection-stats, outstanding-students **(deliberately NOT built — Data/AI teammate's deliverable, see `ANALYTICS_INTEGRATION.md`)** |
+| Analytics | collection-stats, outstanding-students **(built, Phase 3 — rep/admin only; `ANALYTICS_INTEGRATION.md` is the Data/AI consumption guide)** |
 | Ops | **health** (`GET /api/health/` — platform probe, no auth) |
 
 ## How other roles integrate with this backend
@@ -59,10 +59,10 @@ See `API_CONTRACT.md` for exact request/response shapes. Summary:
   /payments/initiate/` → redirect student to the returned `checkout_url`.
   You don't need to touch backend code — just the Paystack dashboard/test
   keys and the frontend checkout UX.
-- **Data/AI teammate:** the §6 analytics endpoints are yours to build in your
-  own app — `docs/ANALYTICS_INTEGRATION.md` documents the sanctioned
-  read-model helpers, permission rules and response shapes. Don't query the
-  database directly.
+- **Data/AI teammate:** the §6 analytics endpoints are **live** — consume them
+  with a dedicated class-rep-role service account.
+  `docs/ANALYTICS_INTEGRATION.md` documents the permission rules, response
+  shapes and the integration rules. Don't query the database directly.
 
 ## Progress status
 Current as of the Sept 18 deployment-hardening sprint (full tour in the root
@@ -74,7 +74,7 @@ Current as of the Sept 18 deployment-hardening sprint (full tour in the root
 | Contributions (+ payments bridge, audit rules) | Complete |
 | Payments (+ settlement rules, refund queue, race-proofing, webhook proof archive) | Complete |
 | Notifications | Complete |
-| Tests | 200/200 passing |
+| Tests | 222/222 passing |
 | Deployment | `render.yaml` + PostgreSQL + health check ready — needs a real Render deploy + Paystack live webhook URL |
 
 ## Known constraints

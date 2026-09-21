@@ -72,6 +72,8 @@ ignored on write; don't build editable inputs for them.
 |---|---|---|---|---|---|
 | GET | /contributions/ | Yes | — | 200 [...] | Student fees page; Rep fees page |
 | POST | /contributions/ | Yes (rep/admin) | {title,amount,deadline,is_mandatory?,target_level?,description?,department_id?} | 201 (incl. server-chosen `department_id`) | Rep "new fee" form |
+| PATCH | /contributions/{id}/ | Yes (rep/admin) | any subset of {title,description,amount,deadline,is_mandatory,target_level,is_closed} | 200 full updated row | Rep "edit fee"; "reopen" action |
+| DELETE | /contributions/{id}/ | Yes (rep/admin) | — | 204 (closes the fee — never removes it) | Rep "close fee" button |
 | GET | /contributions/{id}/ | Yes | — | 200 detail | Fee detail page |
 | GET | /contributions/{id}/summary/ | Yes | — | 200 {total_expected,total_collected,outstanding_count} | Dashboard cards; AI/Analytics |
 | GET | /contributions/{id}/payments/ | Yes (rep/admin) | — | 200 per-student list | Rep roster view |
@@ -79,6 +81,10 @@ ignored on write; don't build editable inputs for them.
 
 `deadline` is **required** on create (explicit `null` is allowed and means "no deadline").
 Don't send `department_id` as a rep — the backend sets it from your profile.
+
+**Closing vs deleting:** DELETE closes a fee (`is_closed: true`, row survives — it's
+audit evidence once money has moved). Reopen with `PATCH { "is_closed": false }`.
+Students never receive closed fees; reps render them greyed-out using `is_closed`.
 
 ### Payments
 | Method | Path | Auth | Body | Success | Needed by |
@@ -111,20 +117,14 @@ Two `404 not_found` cases to render as a normal "not found" state, not a crash:
 Only the owner may mark a notification read — another user's id returns `404`, not
 `403`, so the UI must treat "not found" here as "not mine".
 
-### Departments
-| Method | Path | Auth | Body | Success | Needed by |
-|---|---|---|---|---|---|
-| GET | /departments/ | No | — | 200 [{id,name,faculty}] | Sign-up dropdown (safe to call before login) |
-
-### Analytics (Data/AI teammate's app — not built yet)
+### Analytics (Data/AI teammate — built, Phase 3)
 | Method | Path | Auth | Body | Success | Needed by |
 |---|---|---|---|---|---|
 | GET | /analytics/collection-stats/ | Yes (rep/admin) | — | 200 {total_expected,total_collected,outstanding_count} | Analytics dashboard |
 | GET | /analytics/outstanding-students/?contribution_id=5 | Yes (rep/admin) | — | 200 [...] | "Who still owes" widget |
 
-**Not available yet** — don't wire these into a screen until the Data/AI teammate
-ships them. Per-contribution numbers are already available today from
-`GET /contributions/{id}/summary/`.
+**Live since Phase 3** — rep/admin only (a student calling these gets `403`). Per-
+contribution numbers are also on `GET /contributions/{id}/summary/`.
 
 ### Ops
 | Method | Path | Auth | Body | Success | Needed by |
@@ -191,7 +191,7 @@ Domain-specific codes you may want to branch on (same shape, same status rules):
 | Rep "mark someone paid" vs "see roster" | Same route: GET /contributions/{id}/payments/ (list) and POST /contributions/{id}/payments/ (action) |
 | Unread badge | GET /notifications/ → count items where `is_read == false` |
 | Amounts | Always strings "3500.00". Display as-is. Never `parseFloat` for display |
-| "Who still owes" today | Not built. For one fee use GET /contributions/{id}/payments/ and count rows with `status:"pending"` |
+| "Who still owes" | Rep/admin: GET /analytics/outstanding-students/?contribution_id=5 (or count `status:"pending"` rows on GET /contributions/{id}/payments/) |
 | Money is a string, but `has_paid` is a boolean | Never string-compare `amount`; compare `paid` state with `has_paid` only |
 
 ## Integration readiness checklist

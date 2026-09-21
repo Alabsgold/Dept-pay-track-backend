@@ -3,10 +3,10 @@
 **Who this is for:** the teammate building `GET /api/analytics/*` (§6 of
 `docs/API_CONTRACT.md`).
 
-**Why it isn't built by the backend agent:** §6 is listed in the contract as a
-separate deliverable. The backend agent deliberately **did not** build it — that
-would be taking over another teammate's scope. Instead, everything needed to
-build it cleanly is documented below.
+> **Status update (Phase 3):** the two §6 endpoints are now **built and live** —
+> see `API_CONTRACT.md` §6 for the exact shapes. Everything below still applies:
+> consume the API through a service account; never edit `backend/apps/` and never
+> open a direct database connection.
 
 **Golden rule:** consume the backend through the API and the sanctioned helpers.
 **Do not edit anything under `backend/apps/`**, and do not open a direct database
