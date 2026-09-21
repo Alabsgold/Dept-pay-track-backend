@@ -6,11 +6,10 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
     # release runs before the new instance takes traffic; migrate is the only
     # release-time step the schema needs.
     startCommand: gunicorn core.wsgi:application --bind 0.0.0.0:$PORT --workers 2
-    preDeployCommand: python manage.py migrate
     healthCheckPath: /api/health/
     envVars:
       - key: PYTHON_VERSION
