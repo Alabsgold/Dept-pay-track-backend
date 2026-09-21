@@ -423,8 +423,8 @@ Two resources exist so you can prove the whole system works end to end:
 The repo ships **`render.yaml`** — a one-click blueprint. In Render: *New + →
 Blueprint*, pick this repo, fill the two prompted values (`PAYSTACK_SECRET_KEY`,
 `CORS_ALLOWED_ORIGINS`), and it provisions the web service **plus managed
-PostgreSQL**, runs `collectstatic` + `migrate` (pre-deploy), and health-checks
-`GET /api/health/`.
+PostgreSQL**, runs `collectstatic` + `migrate` (during the build), and
+health-checks `GET /api/health/`.
 
 | What the blueprint handles | Why it matters |
 |---|---|
@@ -432,7 +432,7 @@ PostgreSQL**, runs `collectstatic` + `migrate` (pre-deploy), and health-checks
 | `NUM_PROXIES=1` | The limiter reads the real client IP from `X-Forwarded-For`; without it every student shares Render's proxy IP and the `10/min` throttle locks out everyone at once |
 | `SECRET_KEY` generated + `DEBUG=False` | HSTS / SSL redirect / secure cookies engage when `DEBUG=False` (already coded) |
 | `ALLOWED_HOSTS=.onrender.com` | Django rejects unknown hosts |
-| `preDeployCommand: migrate` | Schema applies before the new version serves traffic |
+| `migrate` in the build command | Free tier has no pre-deploy step, so the schema applies during each build (idempotent); move it to `preDeployCommand` on a paid plan |
 | `healthCheckPath: /api/health/` | Render restarts an unhealthy instance; also handy pre-demo |
 
 One manual step after the first deploy: point the Paystack dashboard webhook
