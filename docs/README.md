@@ -74,7 +74,7 @@ Current as of the Sept 18 deployment-hardening sprint (full tour in the root
 | Contributions (+ payments bridge, audit rules) | Complete |
 | Payments (+ settlement rules, refund queue, race-proofing, webhook proof archive) | Complete |
 | Notifications | Complete |
-| Tests | 223/223 passing |
+| Tests | 266/266 passing (3 opt-in BMONI sandbox checks skipped by default) |
 | Deployment | `render.yaml` + PostgreSQL + health check ready — needs a real Render deploy + Paystack live webhook URL |
 
 ## Known constraints
@@ -83,4 +83,13 @@ Current as of the Sept 18 deployment-hardening sprint (full tour in the root
   deploy point the Paystack dashboard at the real `/api/payments/webhook/`
 - Free-tier Render sleeps after ~15 min idle — ping `/api/health/` before a
   live demo so the cold start doesn't eat the slot
+- **Free Postgres has no backups and expires 30 days after creation** (Render
+  deletes it after a 14-day grace period). The Blueprint deploys on `free` so it
+  applies on a workspace with no billing set up; upgrade to `basic-256mb` in the
+  dashboard before the 30 days are up if the app must outlive the hackathon.
+- **Rollback:** migrations are forward-only — there is no reverse-migration path,
+  and `backend/db_backup.py` only snapshots local SQLite. Recover by fixing
+  forward and redeploying: `Rollback` in the Render dashboard returns to the
+  previous *code* deploy, it does **not** undo a schema migration. Paid Postgres
+  adds point-in-time recovery; free does not.
 - See `SECURITY_AUDIT.md & BACKEND_PROGRESS.md` for issues encountered and how they were resolved

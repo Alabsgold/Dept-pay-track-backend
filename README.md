@@ -1,7 +1,7 @@
 # Departmental Payment/Contribution System — Backend
 
 **Team Visionary Coders** — NACOS National Build Challenge
-**Branch:** `backend-dev` · **Status:** all build modules complete · **223/223 tests passing**
+**Branch:** `backend-dev` · **Status:** all build modules complete · **266/266 tests passing**
 
 Django + DRF backend that lets departments create contributions (dues, event
 fees, shirts, excursions) and students pay through Paystack with automatic
@@ -379,13 +379,13 @@ reconciled in `API_CONTRACT.md` first, never patched silently.
 
 ```bash
 cd backend
-python manage.py test            # full suite — 223 tests
+python manage.py test            # full suite — 266 tests
 python manage.py check           # system check
 python manage.py makemigrations --check --dry-run   # model drift check
 python db_backup.py              # snapshot db.sqlite3 -> backups/ (downloadable)
 ```
 
-**223 tests**, split by concern:
+**266 tests** (3 of them opt-in BMONI sandbox checks, skipped by default), split by concern:
 
 | App | Focus |
 |---|---|

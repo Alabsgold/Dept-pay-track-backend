@@ -6,18 +6,12 @@ services:
     runtime: python
     plan: free
     rootDir: backend
-<<<<<<< HEAD
     # Free-tier services don't support preDeployCommand, so the schema is
     # applied during the build (all env vars, incl. DATABASE_URL, are
     # available there). migrate is idempotent, so re-running it on every
     # build is safe. On a paid plan this can move back to preDeployCommand
     # so the schema applies strictly before the new version serves traffic.
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
-=======
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
-    # release runs before the new instance takes traffic; migrate is the only
-    # release-time step the schema needs.
->>>>>>> 6d46c21c234196317135fbffb15f0d000ff5785e
     startCommand: gunicorn core.wsgi:application --bind 0.0.0.0:$PORT --workers 2
     healthCheckPath: /api/health/
     envVars:
@@ -41,6 +35,20 @@ services:
         sync: false                  # set in the dashboard; also the webhook HMAC key
       - key: PAYSTACK_PUBLIC_KEY
         sync: false
+      # --- BMONI embedded banking (optional) -------------------------------
+      # Leaving BMONI_API_KEY blank keeps the feature switched OFF: the
+      # per-department bank-account endpoints answer 503 rather than inventing
+      # an account. Nothing else in the app depends on it, so a missing
+      # partner key can never block the deploy.
+      # Walkthrough: docs/BMONI_SANDBOX_RUNBOOK.md
+      - key: BMONI_API_KEY
+        sync: false                  # our own partner key, once BMONI issues it
+      - key: BMONI_BASE_URL
+        value: https://embedded-dev.bmoni.com    # sandbox; production host is embedded.bmoni.com
+      # Unset => the webhook receiver fails closed (503) instead of trusting an
+      # unsigned delivery. Never commit a real value.
+      - key: BMONI_WEBHOOK_SECRET
+        sync: false
 
 # The real database. Render's managed PostgreSQL — SQLite would be wiped on
 # every deploy, which is exactly what this block prevents.
@@ -48,4 +56,16 @@ databases:
   - name: dpt-postgres
     databaseName: dpt
     user: dpt
-    plan: basic-256mb                # cheapest tier; upgrade in the dashboard if needed
+    # 'free' is deliberate: it is the only Postgres plan that lets this
+    # Blueprint apply on a workspace with no billing set up, which is what
+    # was blocking the deploy. Trade-off, verified against render.com/docs/free
+    # on 2026-09-28:
+    #   free        -> 1 GB, single instance per workspace, NO backups, and the
+    #                  instance is DELETED 30 days after creation (with a
+    #                  14-day window to upgrade first). Fine for the demo and
+    #                  the judging period; NOT fine if this must outlive it.
+    #   basic-256mb -> smallest paid Postgres: keeps backups and never expires.
+    # Switch to it here, or use "Change compute plan" in the dashboard, before
+    # the 30 days are up. Backups only exist on a paid plan — see the rollback
+    # note in docs/README.md.
+    plan: free
