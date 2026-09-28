@@ -1,6 +1,6 @@
 # Update on Payments + BMONI - From Emmanuel (Backend)
 
-Hello lead,
+Hello,
 
 This is my update on where the system is now and what I have done on payments and BMONI.
 
