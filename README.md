@@ -66,6 +66,9 @@ Admin panel: `http://localhost:8000/admin/`
 | `DEBUG` | Defaults to `False`; set `True` locally only |
 | `PAYSTACK_SECRET_KEY` | Required — the webhook HMAC key; no insecure default |
 | `PAYSTACK_PUBLIC_KEY` | Optional (frontend only; backend never uses it) |
+| `BMONI_API_KEY` | Optional — enables the department NGN bank accounts (`docs/API_CONTRACT.md` §4a). Empty keeps the feature off: those endpoints answer `503` rather than invent an account |
+| `BMONI_BASE_URL` | Defaults to the BMONI **sandbox**; set the production host explicitly |
+| `BMONI_WEBHOOK_SECRET` | BMONI's webhook signing secret. Unset makes the webhook fail closed (`503`) — an unsigned delivery is never trusted |
 | `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` | Needed once deployed |
 
 ## How the system works — feature tour
@@ -183,6 +186,9 @@ checklist: [`docs/FRONTEND_LINKING.md`](docs/FRONTEND_LINKING.md).
 | `GET` | `/verify/{reference}/` | student | Re-check the gateway and settle the payment |
 | `GET` | `/{id}/receipt/` | owner | Receipt for one payment |
 | `POST` | `/webhook/` | Paystack | HMAC-signed gateway callback (idempotent) |
+| `GET` | `/departments/{id}/bank-account/` | department members | **The department's own NGN account** (BMONI) to pay by bank transfer; `provisioned: false` when there isn't one yet |
+| `POST` | `/departments/{id}/bank-account/` | rep/admin | Create that account through BMONI — idempotent, so pressing it twice returns the same account |
+| `POST` | `/bmoni/webhook/` | BMONI | HMAC-SHA256-signed BMONI callback. Deliveries are archived (deduped on BMONI's event id); crediting a deposit is Phase 2 |
 | `GET` | `/unverified/` | admin | **Refund-review queue**: payments flagged `pending_review` (wrong amount, duplicate charge, unverifiable). Read-only — approving/refusing a refund happens in the Django admin |
 
 ### Notifications (`/api/notifications/`)

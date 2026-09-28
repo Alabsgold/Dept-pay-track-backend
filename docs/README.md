@@ -44,7 +44,7 @@ See `API_CONTRACT.md` for exact request/response shapes. Summary:
 | Auth | register, login, logout, me, **roster import (CSV), account claim, claim batches, reset-code / reset-password, set-role** |
 | Departments | list |
 | Contributions | list, create, detail, **PATCH (edit) / DELETE (closes)**, summary, **roster (per-fee payments), manual mark-paid** |
-| Payments | initiate, webhook, verify, history, receipt, **unverified (admin refund-review queue)** |
+| Payments | initiate, webhook, verify, history, receipt, **unverified (admin refund-review queue)**, **department NGN bank account (BMONI — `docs/BMONI_SANDBOX_RUNBOOK.md`)** |
 | Notifications | list, mark read |
 | Analytics | collection-stats, outstanding-students **(built, Phase 3 — rep/admin only; `ANALYTICS_INTEGRATION.md` is the Data/AI consumption guide)** |
 | Ops | **health** (`GET /api/health/` — platform probe, no auth) |

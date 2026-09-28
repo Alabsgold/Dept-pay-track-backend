@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Payment
+from .models import DepartmentBMONIWallet, Payment
 
 
 class PaymentSerializer(serializers.ModelSerializer):
@@ -135,3 +135,35 @@ class UnverifiedPaymentSerializer(serializers.ModelSerializer):
                 f'expected \u20a6{expected:,.2f} (diff: \u20a6{diff:,.2f}).'
             )
         return 'Amount matches; flagged for other reason.'
+
+
+class DepartmentBankAccountSerializer(serializers.ModelSerializer):
+    """
+    The account a department's contributors pay into (BMONI Embedded).
+
+    Read-only by construction: every field is BMONI's own, so there is no way to
+    make the API report an account number BMONI did not issue. The account
+    number is an ordinary 10-digit NUBAN that a student types into their banking
+    app — a public address for money, not a secret.
+    """
+
+    class Meta:
+        model = DepartmentBMONIWallet
+        fields = [
+            'account_name',
+            'account_number',
+            'bank_name',
+            'bank_code',
+            'currency',
+            'status',
+            'provisioned_at',
+        ]
+        read_only_fields = [
+            'account_name',
+            'account_number',
+            'bank_name',
+            'bank_code',
+            'currency',
+            'status',
+            'provisioned_at',
+        ]

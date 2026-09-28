@@ -8,13 +8,22 @@ from decimal import Decimal, InvalidOperation
 from django.conf import settings
 from django.db import IntegrityError
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.contributions.models import Contribution
-from .models import Payment, Transaction
-from .serializers import PaymentSerializer
+from apps.users.models import Department
+from apps.users.permissions import IsClassRepOrAdmin
+from .bmoni_client import (
+    BMONIClient,
+    BMONIError,
+    BMONINotConfigured,
+    provision_ngn_account,
+)
+from .models import BMONIWebhookEvent, DepartmentBMONIWallet, Payment, Transaction
+from .serializers import DepartmentBankAccountSerializer, PaymentSerializer
 from .permissions import IsAdminUser
 from .serializers import UnverifiedPaymentSerializer
 
@@ -426,3 +435,464 @@ class UnverifiedPaymentsView(APIView):
             'count': flagged.count(),
             'results': serializer.data,
         })
+
+
+# --- BMONI Embedded: a department's own NGN bank account --------------------
+#
+# The department's account is issued by BMONI for a real, BVN-verified person
+# (the department's nominated account holder), then stored on the wallet row so
+# a student's payment screen never depends on BMONI being reachable. Verified
+# against the sandbox on 2026-09-26 — see docs/BMONI_SANDBOX_RUNBOOK.md for the
+# full walkthrough and the traps this code avoids.
+
+
+def _is_admin(request):
+    """
+    The admin definition, via the ONE permission class that owns it.
+
+    `IsAdminUser.has_permission` ignores its `view` argument, so passing None
+    keeps a single source of truth for "admin" (role, staff, or superuser)
+    instead of re-testing the same three fields here.
+    """
+    return IsAdminUser().has_permission(request, None)
+
+
+def _as_bvn(value):
+    """An 11-digit Nigerian BVN, or None. Checked here, before it is sent."""
+    bvn = str(value or '').strip()
+    if len(bvn) == 11 and bvn.isdigit():
+        return bvn
+    return None
+
+
+def _scrub(text, secret):
+    """
+    Keep an entered identifier out of logs, columns and responses.
+
+    An upstream error message can echo back what we sent it, so anything that
+    came from the user (the BVN) is masked before we log it or store it. The
+    message itself is still shown — it is often the only useful explanation.
+    """
+    text = str(text or '')
+    if secret:
+        text = text.replace(str(secret), '***')
+    return text
+
+
+def _not_provisioned_message(wallet):
+    """Why there is no account to show yet, in words a member can act on."""
+    if wallet is None:
+        return 'This department has no bank account yet.'
+    if wallet.status == DepartmentBMONIWallet.STATUS_FAILED:
+        return 'Setting up this department\'s bank account failed. A class rep can try again.'
+    return 'This department\'s bank account is still being set up.'
+
+
+def _provisioning_failure(exc, bvn=None):
+    """
+    Map a BMONI failure onto the contract's error shape.
+
+    Only a rejection of what we SENT (400/409/422) is the caller's problem and
+    becomes a `400`; a rejected key, a 5xx or a timeout is ours, so it becomes a
+    `502 gateway_unavailable` with a generic message. The operator still gets
+    BMONI's own words on the wallet row (`last_error`), sanitized.
+    """
+    if exc.status_code in (400, 409, 422):
+        return Response(
+            {'error': 'bad_request', 'message': _scrub(exc.message, bvn)},
+            status=400,
+        )
+    return Response(
+        {
+            'error': 'gateway_unavailable',
+            'message': 'The bank account service is unavailable. Try again shortly.',
+        },
+        status=502,
+    )
+
+
+class DepartmentBankAccountView(APIView):
+    """
+    GET/POST /api/payments/departments/{id}/bank-account/
+
+    The department's own NGN virtual account — what a contributor pays into when
+    they transfer from their bank instead of using the Paystack card flow.
+
+    GET  — any authenticated member of that department (reps/admins included):
+           students are the audience for this account, so everyone who might pay
+           it can read it. "No account yet" is a `200` with `provisioned: false`,
+           never a 404 — that is a normal state the UI renders as "ask your rep",
+           not an error.
+    POST — class rep (their own department only) or admin. Idempotent: a
+           department that already has an account gets the SAME account back with
+           no second call to BMONI, so pressing the button twice cannot open a
+           second account.
+    """
+
+    def get_permissions(self):
+        """
+        Reading the account is for its members; creating one is a rep/admin job.
+
+        Two audiences on one URL: a student must be able to see where to pay, but
+        must not be able to open a real bank account in the department's name.
+        """
+        if self.request.method == 'POST':
+            return [IsClassRepOrAdmin()]
+        return [permissions.IsAuthenticated()]
+
+    def _department(self, request, pk):
+        """
+        The department, or 404 when this caller may not see it.
+
+        A department the caller cannot see must be indistinguishable from one
+        that does not exist, so both answer 404 — the rule the payment and
+        contribution endpoints already follow. For a rep, the scoped lookup is
+        also what keeps them inside their own department: another department's
+        account is simply not there.
+        """
+        if _is_admin(request):
+            return get_object_or_404(Department, pk=pk)
+        return get_object_or_404(Department, pk=pk, id=request.user.department_id)
+
+    def _body(self, department, wallet):
+        """
+        The one response shape, used by both GET and a successful POST.
+
+        `bank_account` is null until an account really exists, and the account
+        details come from the stored row — which only ever holds what BMONI
+        issued.
+        """
+        provisioned = (
+            wallet is not None
+            and wallet.status == DepartmentBMONIWallet.STATUS_ACTIVE
+        )
+        body = {
+            'provisioned': provisioned,
+            'department': {
+                'id': department.id,
+                'name': department.name,
+                'faculty': department.faculty,
+            },
+            'bank_account': (
+                DepartmentBankAccountSerializer(wallet).data
+                if provisioned else None
+            ),
+            'status': (
+                wallet.status if wallet
+                else DepartmentBMONIWallet.STATUS_PENDING
+            ),
+        }
+        if not provisioned:
+            body['message'] = _not_provisioned_message(wallet)
+        return body
+
+    def get(self, request, pk):
+        department = self._department(request, pk)
+        wallet = DepartmentBMONIWallet.objects.filter(
+            department=department
+        ).first()
+        return Response(self._body(department, wallet))
+
+    def post(self, request, pk):
+        department = self._department(request, pk)
+
+        # Read before write: an account that already exists is returned as it is,
+        # with no second call to BMONI. BMONI has no idempotency keys, so this
+        # check — not a retry policy — is what stops a second account or a second
+        # person being created by an impatient second press.
+        wallet = DepartmentBMONIWallet.objects.filter(
+            department=department
+        ).first()
+        if wallet and wallet.status == DepartmentBMONIWallet.STATUS_ACTIVE:
+            return Response(self._body(department, wallet))
+
+        data = request.data
+        first_name = str(data.get('first_name') or '').strip()
+        last_name = str(data.get('last_name') or '').strip()
+        email = str(data.get('email') or '').strip()
+        phone_number = str(data.get('phone_number') or '').strip()
+        bvn = _as_bvn(data.get('bvn'))
+
+        missing = [
+            label
+            for label, value in (
+                ('first_name', first_name),
+                ('last_name', last_name),
+                ('email', email),
+                ('phone_number', phone_number),
+            )
+            if not value
+        ]
+        if bvn is None:
+            missing.append('bvn (11 digits)')
+        if missing:
+            return Response(
+                {
+                    'error': 'bad_request',
+                    'message': 'Missing or invalid: ' + ', '.join(missing) + '.',
+                },
+                status=400,
+            )
+
+        try:
+            wallet_index = int(data.get('ngn_wallet_index') or 1)
+        except (TypeError, ValueError):
+            wallet_index = 1
+
+        # One BMONI person backs at most one department account. Two departments
+        # sharing a bank account is the kind of thing nobody notices until the
+        # money lands, so a holder already on another department is a conflict.
+        # Email and phone are both unique at BMONI, so either matching another
+        # department's holder is the same clash.
+        clash = DepartmentBMONIWallet.objects.filter(
+            Q(holder_email__iexact=email) | Q(holder_phone=phone_number)
+        )
+        if wallet is not None:
+            clash = clash.exclude(pk=wallet.pk)
+        clash = clash.first()
+        if clash is not None:
+            return Response(
+                {
+                    'error': 'conflict',
+                    'message': (
+                        f'{clash.department.name} already has a bank account for '
+                        'this holder. Use different holder details.'
+                    ),
+                },
+                status=409,
+            )
+
+        wallet = wallet or DepartmentBMONIWallet(department=department)
+        wallet.holder_first_name = first_name
+        wallet.holder_last_name = last_name
+        wallet.holder_email = email
+        wallet.holder_phone = phone_number
+        # Last four digits only: the full BVN is never stored anywhere.
+        wallet.holder_bvn_last4 = bvn[-4:]
+        # A retry clears a previous failure back to "in progress".
+        wallet.status = DepartmentBMONIWallet.STATUS_PENDING
+        wallet.save()
+
+        try:
+            user_id, account = provision_ngn_account(
+                BMONIClient(),
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                phone_number=phone_number,
+                bvn=bvn,
+                ngn_wallet_address=(
+                    str(data.get('ngn_wallet_address') or '').strip() or None
+                ),
+                ngn_wallet_index=wallet_index,
+                personal_info=data.get('personal_info') or None,
+                address=data.get('address') or None,
+                wallet_seed=department.id,
+            )
+        except BMONINotConfigured:
+            wallet.mark_failed('BMONI is not configured on this server.')
+            wallet.save()
+            return Response(
+                {
+                    'error': 'unavailable',
+                    'message': 'Bank account setup is not available on this server.',
+                },
+                status=503,
+            )
+        except BMONIError as exc:
+            # Sanitized before it is stored, logged, or returned: an upstream
+            # message can echo back what we sent it.
+            reason = _scrub(exc.message, bvn)
+            wallet.mark_failed(reason)
+            wallet.save()
+            logger.warning(
+                'bmoni provisioning failed for department %s: %s',
+                department.id, reason,
+            )
+            return _provisioning_failure(exc, bvn)
+
+        if not account or not account.get('accountNumber'):
+            # Onboarding came back without an account number. Recording it as a
+            # failure is the honest option: showing students an empty "pay here"
+            # card would collect money into an account nobody can name.
+            wallet.mark_failed(
+                'BMONI did not return an NGN account for this holder.'
+            )
+            wallet.save()
+            return Response(
+                {
+                    'error': 'gateway_unavailable',
+                    'message': (
+                        'The bank account service did not return an account. '
+                        'Try again shortly.'
+                    ),
+                },
+                status=502,
+            )
+
+        wallet.mark_active(account, bmoni_user_id=user_id)
+        try:
+            wallet.save()
+        except IntegrityError:
+            # The DB's unique `bmoni_user_id` fired: between the conflict check
+            # above and this save, another department claimed the same BMONI
+            # person. Fail this attempt rather than let two departments share an
+            # account nobody can tell apart.
+            wallet.bmoni_user_id = None
+            wallet.mark_failed(
+                'Another department already uses this account holder.'
+            )
+            wallet.save()
+            return Response(
+                {
+                    'error': 'conflict',
+                    'message': (
+                        'This account holder is already used by another department.'
+                    ),
+                },
+                status=409,
+            )
+        logger.info(
+            'bmoni issued an NGN account for department %s (%s, ending %s)',
+            department.id, wallet.bank_name, wallet.account_number[-4:],
+        )
+        return Response(self._body(department, wallet), status=201)
+
+
+def _find_user_id(data):
+    """
+    The BMONI user id inside a webhook payload, when it states one.
+
+    Deliberately conservative: the exact envelope of a live BMONI delivery is
+    not yet confirmed (we are still on the shared sandbox key, whose
+    subscription points at another partner — see the runbook), so only explicit
+    id keys are read and nothing is guessed. A missing link costs one audit
+    join; a WRONG link would attach a deposit to the wrong department.
+    """
+    if not isinstance(data, dict):
+        return None
+
+    candidates = [data.get('bmoniUserId'), data.get('userId')]
+    for key in ('data', 'user', 'employee', 'wallet', 'account'):
+        nested = data.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested.get('bmoniUserId'))
+            candidates.append(nested.get('userId'))
+
+    return next(
+        (value for value in candidates if isinstance(value, str) and value),
+        None,
+    )
+
+
+def _wallet_for_event(data):
+    """The department wallet an event is about, or None when we cannot tell."""
+    user_id = _find_user_id(data)
+    if not user_id:
+        return None
+    return DepartmentBMONIWallet.objects.filter(bmoni_user_id=user_id).first()
+
+
+class BMONIWebhookView(APIView):
+    """
+    POST /api/payments/bmoni/webhook/ — BMONI calls this automatically.
+
+    No auth token, because BMONI cannot hold one. Authenticity comes from the
+    signature instead: HMAC-SHA256 over the **raw** request body in
+    `x-webhook-signature`, keyed with our subscription's secret
+    (`BMONI_WEBHOOK_SECRET`). The body is therefore verified BEFORE it is
+    parsed — re-serialising JSON first would change the bytes and break the
+    check. An unsigned or wrongly-signed delivery is a `400`, exactly as the
+    Paystack webhook treats its own.
+
+    BMONI retries deliveries, so `x-webhook-event-id` is the dedupe key: the
+    event is stored once (`event_id` is unique) and a repeat is a no-op `200`
+    rather than a second row. What gets stored is what BMONI actually said.
+
+    Phase 1 archives events without crediting them, so they land
+    `processed=False` as the Phase 2 worklist — crediting a deposit needs our
+    own partner key and sandbox test tokens (docs/BMONI_SANDBOX_RUNBOOK.md).
+    A `200` here means "received and filed", which is all this can honestly
+    promise today.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        secret = settings.BMONI_WEBHOOK_SECRET
+        if not secret:
+            # Fail closed. Without the subscription's secret, a forged delivery
+            # is indistinguishable from a real one, so nothing is trusted and
+            # BMONI keeps retrying until the server is configured.
+            logger.warning(
+                'bmoni webhook delivery ignored: BMONI_WEBHOOK_SECRET is unset'
+            )
+            return Response(
+                {'error': 'unavailable', 'message': 'Webhook is not configured.'},
+                status=503,
+            )
+
+        payload = request.body
+        signature = request.headers.get('x-webhook-signature')
+
+        if not signature:
+            return Response(
+                {'error': 'bad_request', 'message': 'Missing signature.'},
+                status=400,
+            )
+
+        expected_signature = hmac.new(
+            secret.encode(),
+            payload,
+            hashlib.sha256,
+        ).hexdigest()
+
+        if not hmac.compare_digest(signature, expected_signature):
+            return Response(
+                {'error': 'bad_request', 'message': 'Invalid signature.'},
+                status=400,
+            )
+
+        try:
+            data = json.loads(payload)
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'bad_request', 'message': 'Invalid payload.'},
+                status=400,
+            )
+
+        if not isinstance(data, dict):
+            return Response(
+                {'error': 'bad_request', 'message': 'Invalid payload.'},
+                status=400,
+            )
+
+        # Dedupe key is BMONI's own event id. If a delivery ever arrives without
+        # one, the body's hash stands in: a retry of the same delivery hashes
+        # identically, so it is still a no-op instead of a second row.
+        event_id = request.headers.get('x-webhook-event-id') or (
+            'body-' + hashlib.sha256(payload).hexdigest()
+        )
+
+        event_type = data.get('event') or data.get('type') or ''
+
+        _, created = BMONIWebhookEvent.objects.get_or_create(
+            event_id=event_id[:128],
+            defaults={
+                'event_type': str(event_type)[:100],
+                'wallet': _wallet_for_event(data),
+                'raw_payload': data,
+            },
+        )
+
+        if not created:
+            # A retry of something already filed: nothing to do.
+            logger.info('bmoni webhook event %s already filed', event_id)
+            return Response({'received': True})
+
+        logger.info(
+            'bmoni webhook filed event=%s id=%s (archived unprocessed: '
+            'deposit crediting is Phase 2)',
+            event_type, event_id,
+        )
+        return Response({'received': True})

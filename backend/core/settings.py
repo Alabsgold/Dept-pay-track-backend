@@ -43,6 +43,21 @@ AUTH_USER_MODEL = 'users.User'
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY')
 PAYSTACK_PUBLIC_KEY = config('PAYSTACK_PUBLIC_KEY', default='')
 
+# BMONI Embedded — the department's own NGN virtual bank account.
+# Optional feature, so unlike PAYSTACK_SECRET_KEY the key is NOT required to
+# boot: the app serves the Paystack flows fine without it. An empty key leaves
+# the BMONI endpoints answering 503 (feature off) — never a fake account.
+# The key travels in the `x-api-key` header (not Authorization) and is a PARTNER
+# key: BMONI derives the partner from the key itself, so the now-deprecated
+# `partnerId` body field is never sent.
+# Base URL defaults to the shared sandbox. Production is
+# https://embedded.bmoni.com and must be set explicitly in the environment.
+BMONI_API_KEY = config('BMONI_API_KEY', default='')
+BMONI_BASE_URL = config('BMONI_BASE_URL', default='https://embedded-dev.bmoni.com')
+# The subscription's signing secret (BMONI's HMAC key). Empty => the webhook
+# receiver fails closed (503) rather than trusting an unsigned delivery.
+BMONI_WEBHOOK_SECRET = config('BMONI_WEBHOOK_SECRET', default='')
+
 # Application definition
 
 INSTALLED_APPS = [

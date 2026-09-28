@@ -107,6 +107,9 @@ Students never receive closed fees; reps render them greyed-out using `is_closed
 | GET | /payments/{id}/receipt/ | Yes | — | 200 payment | Receipt modal |
 | GET | /payments/unverified/ | Yes (admin) | — | 200 [...] | Admin refund-review queue |
 | POST | /payments/webhook/ | No (gateway) | signed payload | 200 {received:true} | n/a — server-to-server, never called by the frontend |
+| GET | /payments/departments/{id}/bank-account/ | Yes | — | 200 {provisioned,department,bank_account,status} | **"Pay by transfer" card**: show the account only when `provisioned:true` |
+| POST | /payments/departments/{id}/bank-account/ | Yes (rep/admin) | {first_name,last_name,email,phone_number,bvn} | 201 (200 if it already existed) | Rep's "set up a department account" action |
+| POST | /payments/bmoni/webhook/ | No (BMONI) | signed payload | 200 {received:true} | n/a — server-to-server, never called by the frontend |
 
 Use `checkout_url` (contract §4) for the redirect — `authorization_url` is the same
 value kept for older integrations. After the student returns from Paystack, either

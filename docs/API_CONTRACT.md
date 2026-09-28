@@ -1,6 +1,6 @@
 # Backend API Contract — Departmental Payment/Contribution System
 Team Visionary Coders — NACOS National Build Challenge
-**v2.2 — Phase 3: contribution edit/close + live analytics endpoints · 222 tests passing**
+**v2.3 — Phase 4: department NGN bank accounts via BMONI (section 4a) · 261 tests passing**
 
 This is what the backend exposes. Frontend builds against these endpoints;
 whoever's on the Payment Gateway side needs the `/payments/` section especially.
@@ -319,6 +319,9 @@ Guards, all returning `400`/`403`/`409` before any write:
 | GET | `/payments/verify/{reference}/` | Manually re-check a payment's status |
 | GET | `/payments/history/` | Logged-in student's own payment history |
 | GET | `/payments/{id}/receipt/` | Digital receipt for one payment |
+| GET | `/payments/departments/{id}/bank-account/` | **NEW** — the department's own NGN account, to pay by bank transfer (section 4a) |
+| POST | `/payments/departments/{id}/bank-account/` | **NEW** — rep/admin: create that account through BMONI (idempotent) |
+| POST | `/payments/bmoni/webhook/` | **NEW** — BMONI calls this automatically — no user, no auth token |
 
 **POST /payments/initiate/**
 ```json
@@ -424,6 +427,79 @@ are still retained with `payment: null` for forensics.
     "status": "success", "verified_at": "2026-09-06T18:20:00Z" }
 ]
 ```
+
+---
+
+### 4a. Department NGN bank accounts (BMONI Embedded) — NEW in v2.3
+
+Every department can have its own **real NGN virtual bank account**, issued by
+BMONI for a BVN-verified account holder. Students pay into it by an ordinary bank
+transfer — the alternative to the Paystack card flow. The account is stored
+server-side the moment BMONI issues it, so the payment screen never depends on
+BMONI being reachable.
+
+| Method | Endpoint | Who | Purpose |
+|---|---|---|---|
+| GET | `/payments/departments/{id}/bank-account/` | Any member of that department (reps/admins included; admins may read any department) | Read the account for display |
+| POST | `/payments/departments/{id}/bank-account/` | Class rep (own department only) or admin | Create it through BMONI |
+
+**GET /payments/departments/{id}/bank-account/**
+```json
+// Response  200 — provisioned
+{ "provisioned": true,
+  "department": { "id": 3, "name": "Computer Science", "faculty": "Physical Sciences" },
+  "bank_account": { "account_name": "Dillon Bunch", "account_number": "9845221370",
+                    "bank_name": "PROVIDUS BANK", "bank_code": "000023",
+                    "currency": "NGN", "status": "active",
+                    "provisioned_at": "2026-09-26T21:00:00Z" },
+  "status": "active" }
+
+// Response  200 — no account yet (NOT a 404: this is a normal state)
+{ "provisioned": false,
+  "department": { "id": 3, "name": "Computer Science", "faculty": "Physical Sciences" },
+  "bank_account": null, "status": "pending",
+  "message": "This department has no bank account yet." }
+```
+**Frontend rule:** offer "pay by transfer" only when `provisioned` is `true`, and
+display `bank_account.account_name` **exactly as returned** — that name has to
+match what the student sees in their banking app, or they will think they are
+paying a stranger.
+
+**POST /payments/departments/{id}/bank-account/** — the account holder's details
+```json
+// Request
+{ "first_name": "Bunch", "last_name": "Dillon", "email": "holder@school.edu.ng",
+  "phone_number": "+2348012345678", "bvn": "95888168924" }
+
+// Response  201 — created (200 if the department already had one, same shape)
+{ ...same shape as the GET... }
+```
+- `bvn` must be **11 digits**, and `first_name`/`last_name` must match the BVN
+  holder exactly — BMONI refuses identity verification otherwise.
+- **Idempotent.** A department that already has an account gets that same account
+  back and nothing new is created, so the button is safe to press twice.
+- **The BVN is never stored** — only its last four digits, so a retry has to send
+  it again.
+- `409 conflict` — that holder (same email or phone) is already on **another**
+  department's account. Two departments must never share one bank account, so this
+  is refused before anything is created at BMONI.
+- `400 bad_request` · `503 unavailable` (BMONI not configured on this server) ·
+  `502 gateway_unavailable` (BMONI unreachable, or a response with no usable
+  account). A failed attempt is recorded on the department's row and can be retried.
+
+A "usable account" means one BMONI issued **for this holder**. If BMONI only
+returns a pooled provider account (which it currently does in the sandbox — see
+`BMONI_SANDBOX_RUNBOOK.md` §7), this endpoint answers `502` and stores nothing
+rather than showing students an account whose name is not their department's.
+
+**POST /payments/bmoni/webhook/** — BMONI's own callbacks. No auth token: the
+request is authenticated by an **HMAC-SHA256 signature** in `x-webhook-signature`
+over the raw body, and `x-webhook-event-id` is the dedupe key, so a retried
+delivery is a no-op `200`. Deliveries are archived verbatim — they are the
+evidence behind a deposit. **Crediting a deposit to a student's contribution is
+Phase 2**, so a `200` currently means "received and filed" and nothing more.
+Missing/invalid signature, an unparseable body, or an unconfigured server →
+`400`/`503`, with nothing stored.
 
 ---
 
@@ -534,6 +610,7 @@ one. Branch on `payload.error` when you can; the status code is always authorita
 | 400 | `email_taken` | `/auth/claim/` | Ask the student to pick a different email |
 | 403 | `forbidden` | `POST /contributions/{id}/payments/` | A rep may not mark *themselves* paid — only a real admin may |
 | 503 | `unavailable` | `POST /contributions/{id}/payments/` | Offline mark-paid isn't possible for this fee/student |
+| 503 | `unavailable` | `POST /payments/departments/{id}/bank-account/`, `/payments/bmoni/webhook/` | BMONI isn't configured on this server (no API key, or no webhook secret) — the feature is off and nothing was created |
 
 **Rules of thumb for the single handler:** branch on `payload.error`, fall back to the
 status code, and always render `payload.message`. Every error below 500 — including the
@@ -569,5 +646,11 @@ These apply to every endpoint above. Backend must enforce them; QA must test the
 - Verify the HMAC against the **raw request body** (never re-serialized JSON).
 
 **Analytics (section 6) — permissions decided:** both `/analytics/` endpoints are **class rep/admin only** (`403` for students). The Data/AI teammate consumes them via a dedicated read-only service account with the class-rep role — never from the browser.
+
+**BMONI bank accounts & webhook (section 4a):**
+- `GET /payments/departments/{id}/bank-account/` — readable by that department's own members; another department answers `404`, not `403`, so it is indistinguishable from a department that does not exist.
+- `POST` — class rep/admin only, and a rep is scoped to their own department. Nothing is written unless BMONI actually issued an account number, so a student can never be shown a "pay here" account that does not exist.
+- `/payments/bmoni/webhook/` — HMAC-SHA256 over the **raw** body before parsing, `x-webhook-event-id` as the idempotency key, and a fail-closed `503` when the signing secret is not configured (an unsigned forgery is never trusted).
+- The BVN is never stored, never logged, and masked out of any upstream message that echoes it back; only its last four digits are kept.
 
 **Registration hardening (section 1):** passwords are validated with Django's built-in validators (min 8 chars, common-password and all-numeric checks). Duplicate `username`, `email`, or `matric_number` attempts return one **generic** error (no account enumeration), with case-insensitive identifier checks; usernames cannot contain `@`. Privileged account fields are ignored on registration and profile updates. Login and register are rate-limited server-side at 10/min per IP — clients must handle `429` using the standard error shape.
